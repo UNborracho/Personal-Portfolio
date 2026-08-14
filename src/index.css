@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&display=swap');
+@import 'tailwindcss';
+
+/* ── Lenis smooth-scroll (recommended CSS) ───────────────────────────── */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+.lenis.lenis-smooth iframe {
+  pointer-events: none;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+/* ── Custom blurred-dot cursor ─────────────────────────────────────── */
+html.cursor-none,
+html.cursor-none * {
+  cursor: none !important;
+}
+.cursor-dot {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: #fff;
+  mix-blend-mode: difference;
+  filter: blur(3px);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 99999;
+  will-change: transform;
+  /* morph easing ≈ power2.inOut (no linear) */
+  transition: width 0.28s cubic-bezier(0.45, 0, 0.55, 1),
+    height 0.28s cubic-bezier(0.45, 0, 0.55, 1),
+    margin 0.28s cubic-bezier(0.45, 0, 0.55, 1), background 0.28s cubic-bezier(0.45, 0, 0.55, 1),
+    border-width 0.28s cubic-bezier(0.45, 0, 0.55, 1);
+}
+.cursor-dot.cursor-hover {
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  background: transparent;
+  border: 1.5px solid #fff;
+}

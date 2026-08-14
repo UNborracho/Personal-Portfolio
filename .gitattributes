@@ -1,0 +1,2 @@
+# Normalize line endings; no Git LFS (this repo has no large binaries).
+* text=auto eol=lf

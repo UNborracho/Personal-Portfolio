@@ -1,0 +1,10 @@
+{
+  "description": "This web application offers users a guided experience to create content based on prompts, enhancing creativity and productivity for writers and creators.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
