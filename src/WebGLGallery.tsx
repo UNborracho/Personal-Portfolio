@@ -1,32 +1,40 @@
-import { useEffect, useRef, useState } from 'react'
-import * as THREE from 'three'
-import gsap from 'gsap'
-import { WORKS, COL_OFFSETS, type Work, type Shape } from './shared'
+import { useEffect, useRef, useState } from "react"
+import * as THREE from "three"
+import gsap from "gsap"
+import { COL_OFFSETS, shuffled, type WallPhoto } from "./shared"
 
 // ── Layout constants (tunable) ──────────────────────────────────────────
 const NCOLS = 4
 const ROWS = 9
-export const SLOT_COUNT = NCOLS * ROWS // 36
-const NUM_CYCLES = 10 // how many cycles the scroll spacer spans (~ "endless")
+const SLOT_COUNT = NCOLS * ROWS // 36 planes on the conveyor
+const NUM_CYCLES = 10 // scroll-spacer span (~ "endless")
 const GAP = 24
 const SIDE_MARGIN = 40
 const FOV = 50
 const CURVE = 0.06 // parabolic recede depth (cylinder bend strength)
 const VEL_TILT = 0.00045 // rotation.x per px of scroll velocity
-const ROW_VEL = 0.010 // per-row velocity parallax (the "loose/flowing" feel)
+const ROW_VEL = 0.01 // per-row velocity parallax (the "loose/flowing" feel)
 const MAX_TILT = 0.32
 const HOVER_HOLD = 2 // frames a candidate must stay stable before hover switches
 
-const SIZE_FACTOR: Record<Shape, number> = { portrait: 4 / 3, landscape: 3 / 4, square: 1 }
+/** Deterministic wall seed — the first lap's shuffle must match the
+ *  preloader's preload list (App reads the same constant via wallSequence). */
+export const WALL_SEED = 20260815
 
 interface Props {
-  // fractional, sub-pixel scroll (lenis.animatedScroll) — reading window.scrollY
-  // (an integer) made plane motion steppy. See App for the source.
+  // view activity: false → canvas fades out + spacer collapses (scroll dies)
+  // while staying MOUNTED — re-entering overview fades back in.
+  active: boolean
+  // filtered photo pool for the current category (identity changes on cat
+  // switch → the conveyor re-seeds without touching the WebGL context)
+  pool: WallPhoto[]
+  // fractional, sub-pixel scroll (lenis.animatedScroll)
   getScroll: () => number
   isDark: boolean
-  onHover: (w: Work | null) => void
-  onSlotIndex: (i: number) => void
-  onPick: (w: Work) => void
+  onHover: (w: WallPhoto | null) => void
+  /** position inside the current lap (1-based) → footer odometer */
+  onSeq: (n: number) => void
+  onPick: (w: WallPhoto) => void
 }
 
 interface Layout {
@@ -36,11 +44,11 @@ interface Layout {
   cols: { x: number; depth: number }[]
 }
 
-function computeLayout(vw: number, vh: number): Layout {
+// Pitch must clear the tallest photo in the pool: height = colW / ar, so the
+// worst case is the smallest aspect ratio (2:3 portrait → 1.5 × colW).
+function computeLayout(vw: number, vh: number, minAr: number): Layout {
   const colW = (vw - SIDE_MARGIN * 2 - GAP * (NCOLS - 1)) / NCOLS
-  // > portrait (4/3) so same-column planes never overlap (overlap + transparent
-  // sorting was the source of the scroll flicker).
-  const pitch = colW * 1.45
+  const pitch = colW * Math.max(1.45, (1 / Math.max(minAr, 0.5)) * 1.12)
   const cycleH = ROWS * pitch
   const halfSpread = (vw - SIDE_MARGIN * 2) / 2
   const cols = Array.from({ length: NCOLS }, (_, c) => {
@@ -52,39 +60,35 @@ function computeLayout(vw: number, vh: number): Layout {
   return { colW, pitch, cycleH, cols }
 }
 
-function shuffle<T>(arr: T[]): T[] {
-  const a = arr.slice()
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
-// Build slot→work mapping: 36 slots filled by repeating the (shuffled) work set
-function buildSlotWork(works: Work[]): Work[] {
-  const order = shuffle(works.map((_, i) => i))
-  return Array.from({ length: SLOT_COUNT }, (_, i) => works[order[i % works.length]])
-}
-
-export default function WebGLGallery({ getScroll, isDark, onHover, onSlotIndex, onPick }: Props) {
+export default function WebGLGallery({
+  active,
+  pool,
+  getScroll,
+  isDark,
+  onHover,
+  onSeq,
+  onPick,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const layoutRef = useRef<Layout>(computeLayout(window.innerWidth, window.innerHeight))
+  const spacerRef = useRef<HTMLDivElement>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const layoutRef = useRef<Layout>(
+    computeLayout(window.innerWidth, window.innerHeight, 1),
+  )
   const [cycleH, setCycleH] = useState(() => layoutRef.current.cycleH)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const getScrollRef = useRef(getScroll)
   getScrollRef.current = getScroll
+  const setPoolRef = useRef<((p: WallPhoto[]) => void) | null>(null)
 
   // stable callback refs (so the mount effect never re-runs)
-  const cbRef = useRef({ onHover, onSlotIndex, onPick })
-  cbRef.current = { onHover, onSlotIndex, onPick }
+  const cbRef = useRef({ onHover, onSeq, onPick })
+  cbRef.current = { onHover, onSeq, onPick }
 
-  // mutable gallery state
-  const slotWorkRef = useRef<Work[]>(buildSlotWork(WORKS))
-  const hoveredIdRef = useRef<number | null>(null)
+  const hoveredKeyRef = useRef<string | null>(null)
   const lastScrollRef = useRef(0)
   const velRef = useRef(0)
-  const lastIdxRef = useRef(-1)
   const disposedRef = useRef(false)
 
   // ── Mount: set up Three.js + RAF (runs once) ─────────────────────────
@@ -95,7 +99,11 @@ export default function WebGLGallery({ getScroll, isDark, onHover, onSlotIndex, 
     const vw = window.innerWidth
     const vh = window.innerHeight
 
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: false,
+    })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(vw, vh)
     renderer.setClearColor(isDark ? 0x080808 : 0xfefefe, 1)
@@ -109,21 +117,21 @@ export default function WebGLGallery({ getScroll, isDark, onHover, onSlotIndex, 
     }
     setCam(vw, vh)
 
-    // shared unit plane geometry (per-plane Mesh + own material)
     const geo = new THREE.PlaneGeometry(1, 1)
-
-    // textures — one per work id, loaded async
     const loader = new THREE.TextureLoader()
-    const texByWorkId = new Map<number, THREE.Texture>()
-    const planesByWorkId = new Map<number, THREE.Mesh[]>()
+    // thumb URL → texture (null while loading). Survives pool switches.
+    const texCache = new Map<string, THREE.Texture | null>()
+
+    // ── conveyor state ─────────────────────────────────────────────────
+    let poolArr: WallPhoto[] = []
+    let N = 1
+    let seq: WallPhoto[] = []
+    let nextIdx = 0 // photos handed out so far (starts at SLOT_COUNT)
+    let lastLap = 0
+    let suppressWrap = 0 // frames to ignore wrap jumps (pool/scroll resets)
 
     const planes: THREE.Mesh[] = []
-    const slotWork = slotWorkRef.current
-
-    slotWork.forEach((w, i) => {
-      // Opaque in steady state (transparent only during the load fade-in).
-      // Opaque + depthWrite gives deterministic occlusion → no transparent
-      // sort flicker, even if planes momentarily overlap.
+    for (let i = 0; i < SLOT_COUNT; i++) {
       const mat = new THREE.MeshBasicMaterial({
         map: null,
         transparent: false,
@@ -132,71 +140,120 @@ export default function WebGLGallery({ getScroll, isDark, onHover, onSlotIndex, 
         color: 0xffffff,
       })
       const mesh = new THREE.Mesh(geo, mat)
-      mesh.visible = false // hidden until its texture loads
-      mesh.userData = { slot: i, workId: w.id, shape: w.shape }
+      mesh.visible = false
+      mesh.userData = { slot: i, wp: null, want: null, ar: 1, lastY: 0 }
       scene.add(mesh)
       planes.push(mesh)
-      const arr = planesByWorkId.get(w.id) ?? []
-      arr.push(mesh)
-      planesByWorkId.set(w.id, arr)
-    })
+    }
 
-    // kick off texture loads for every work
-    WORKS.forEach((w) => {
-      loader.load(w.src, (tex) => {
+    const ensureTex = (wp: WallPhoto) => {
+      const key = wp.photo.thumb
+      if (texCache.has(key)) return
+      texCache.set(key, null) // loading marker
+      loader.load(key, (tex) => {
         if (disposedRef.current) return
         tex.colorSpace = THREE.SRGBColorSpace
         tex.generateMipmaps = true
         tex.minFilter = THREE.LinearMipmapLinearFilter
         tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
-        texByWorkId.set(w.id, tex)
-        // show + fade in any plane currently bound to this work, then settle
-        // to opaque so steady-state rendering is depth-stable.
-        planesByWorkId.get(w.id)?.forEach((m) => {
-          if (m.userData.workId === w.id) {
-            const mat = m.material as THREE.MeshBasicMaterial
-            mat.map = tex
-            mat.transparent = true
-            mat.needsUpdate = true
-            m.visible = true
-            if (mat.opacity < 0.99) {
-              gsap.to(mat, {
-                opacity: 1,
-                duration: 0.6,
-                ease: 'power2.inOut',
-                onComplete: () => {
-                  mat.transparent = false
-                },
-              })
-            } else {
-              mat.transparent = false
-            }
-          }
-        })
+        texCache.set(key, tex)
+        // hand it to any plane waiting on this photo
+        for (const m of planes) {
+          if (m.userData.want && m.userData.want.photo.thumb === key)
+            bindPlane(m, m.userData.want)
+        }
       })
-    })
+    }
+
+    // Opaque in steady state (transparent only during the load fade-in).
+    // Opaque + depthWrite gives deterministic occlusion → no transparent
+    // sort flicker, even if planes momentarily overlap.
+    const bindPlane = (mesh: THREE.Mesh, wp: WallPhoto) => {
+      const tex = texCache.get(wp.photo.thumb)
+      if (!tex) {
+        mesh.userData.want = wp // try again when the texture arrives
+        ensureTex(wp)
+        return
+      }
+      mesh.userData.want = null
+      mesh.userData.wp = wp
+      mesh.userData.ar = wp.photo.w / wp.photo.h
+      const mat = mesh.material as THREE.MeshBasicMaterial
+      const fresh = mat.map !== tex
+      mat.map = tex
+      mat.needsUpdate = true
+      mesh.visible = true
+      // keep the current hover-dim state consistent after a rebind
+      mat.color.setHex(
+        hoveredKeyRef.current !== null &&
+          hoveredKeyRef.current !== wp.photo.thumb
+          ? 0x888888
+          : 0xffffff,
+      )
+      if (fresh && mat.opacity < 0.99) {
+        mat.transparent = true
+        gsap.to(mat, {
+          opacity: 1,
+          duration: 0.6,
+          ease: "power2.inOut",
+          onComplete: () => {
+            mat.transparent = false
+          },
+        })
+      } else {
+        mat.transparent = false
+        mat.opacity = 1
+      }
+    }
+
+    const applyLayout = (w: number, h: number) => {
+      const minAr =
+        poolArr.length > 0
+          ? Math.min(...poolArr.map((p) => p.photo.w / p.photo.h))
+          : 1
+      layoutRef.current = computeLayout(w, h, minAr)
+      setCycleH(layoutRef.current.cycleH)
+    }
+
+    const setPool = (p: WallPhoto[]) => {
+      poolArr = p
+      N = Math.max(1, p.length)
+      seq = shuffled(p, WALL_SEED) // lap 0 — matches the preloader's list
+      nextIdx = SLOT_COUNT
+      lastLap = 0
+      suppressWrap = 3 // scroll resets to 0 → ignore the position jump
+      for (let i = 0; i < SLOT_COUNT; i++) {
+        const wp = seq[i % N] // small pools repeat within the first screen
+        bindPlane(planes[i], wp)
+      }
+      cbRef.current.onSeq(1)
+    }
+
+    setPoolRef.current = setPool
 
     // ── raycasting ────────────────────────────────────────────────────
-    // Hover is evaluated every frame (in the render loop) against the last
-    // known pointer position, with change-hysteresis — so a still cursor
-    // tracks planes scrolling under it, and boundary crossings don't toggle
-    // the hover (which was the info-card flicker).
     const raycaster = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
-    const pointerNdc = new THREE.Vector2(-2, -2) // off-screen until pointer moves
+    const pointerNdc = new THREE.Vector2(-2, -2)
     let pointerInside = false
-    let pendingId: number | null = null
+    let pendingKey: string | null = null
     let pendingCount = 0
 
-    const setHover = (id: number | null) => {
-      if (id === hoveredIdRef.current) return
-      hoveredIdRef.current = id
+    const setHover = (key: string | null) => {
+      if (key === hoveredKeyRef.current) return
+      hoveredKeyRef.current = key
       planes.forEach((m) => {
-        const dim = id !== null && m.userData.workId !== id
-        ;(m.material as THREE.MeshBasicMaterial).color.setHex(dim ? 0x888888 : 0xffffff)
+        const wp = m.userData.wp as WallPhoto | null
+        const dim = key !== null && wp !== null && wp.photo.thumb !== key
+        ;(m.material as THREE.MeshBasicMaterial).color.setHex(
+          dim ? 0x888888 : 0xffffff,
+        )
       })
-      const w = id !== null ? WORKS.find((x) => x.id === id) ?? null : null
-      cbRef.current.onHover(w)
+      const wp =
+        key !== null
+          ? poolArr.find((x) => x.photo.thumb === key) ?? null
+          : null
+      cbRef.current.onHover(wp)
     }
 
     const hitAt = (clientX: number, clientY: number) => {
@@ -204,91 +261,123 @@ export default function WebGLGallery({ getScroll, isDark, onHover, onSlotIndex, 
       ndc.y = -(clientY / window.innerHeight) * 2 + 1
       raycaster.setFromCamera(ndc, camera)
       const hits = raycaster.intersectObjects(planes, false)
-      const hit = hits.find((h) => h.object.visible && (h.object.material as THREE.MeshBasicMaterial).opacity > 0.5)
-      return hit ? (hit.object.userData.workId as number) : null
+      const hit = hits.find(
+        (h) =>
+          (h.object as THREE.Mesh).visible &&
+          ((h.object as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity > 0.5,
+      )
+      return hit ? ((hit.object.userData.wp as WallPhoto) ?? null) : null
     }
 
     const onMove = (e: PointerEvent) => {
       pointerInside = true
-      pointerNdc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1)
+      pointerNdc.set(
+        (e.clientX / window.innerWidth) * 2 - 1,
+        -(e.clientY / window.innerHeight) * 2 + 1,
+      )
     }
     const onLeave = () => {
       pointerInside = false
     }
     const onClick = (e: PointerEvent) => {
-      const id = hitAt(e.clientX, e.clientY)
-      if (id !== null) {
-        const w = WORKS.find((x) => x.id === id)
-        if (w) cbRef.current.onPick(w)
-      }
+      if (!activeRef.current) return
+      const wp = hitAt(e.clientX, e.clientY)
+      if (wp) cbRef.current.onPick(wp)
     }
-    canvas.addEventListener('pointermove', onMove)
-    canvas.addEventListener('pointerleave', onLeave)
-    canvas.addEventListener('click', onClick)
+    canvas.addEventListener("pointermove", onMove)
+    canvas.addEventListener("pointerleave", onLeave)
+    canvas.addEventListener("click", onClick)
 
-    // resize
     const onResize = () => {
       const w = window.innerWidth
       const h = window.innerHeight
       renderer.setSize(w, h)
       setCam(w, h)
-      layoutRef.current = computeLayout(w, h)
-      setCycleH(layoutRef.current.cycleH)
+      applyLayout(w, h)
     }
-    window.addEventListener('resize', onResize)
+    window.addEventListener("resize", onResize)
 
     // ── render loop ───────────────────────────────────────────────────
-    const wrapY = (y: number, half: number, cycleH: number) =>
-      (((y + half) % cycleH) + cycleH) % cycleH - half
+    const wrapY = (y: number, half: number, ch: number) =>
+      ((((y + half) % ch) + ch) % ch) - half
 
     let raf = 0
     const tick = () => {
       raf = requestAnimationFrame(tick)
       const L = layoutRef.current
-      // sub-pixel scroll from Lenis (window.scrollY is integer → steppy)
       const scrollY = getScrollRef.current()
       const s = ((scrollY % L.cycleH) + L.cycleH) % L.cycleH
       const inst = scrollY - lastScrollRef.current
       lastScrollRef.current = scrollY
       velRef.current += (inst - velRef.current) * 0.1
       const vel = velRef.current
+      if (suppressWrap > 0) suppressWrap--
 
       for (const mesh of planes) {
         const i = mesh.userData.slot as number
-        const shape = mesh.userData.shape as Shape
         const col = i % NCOLS
         const row = Math.floor(i / NCOLS)
         const baseY = (row - (ROWS - 1) / 2) * L.pitch + COL_OFFSETS[col]
         let y = baseY - s
         y = wrapY(y, L.cycleH / 2, L.cycleH)
         y += (row % 3) * vel * ROW_VEL // per-row velocity parallax
+
+        // conveyor rebind: plane scrolled off the top re-enters at the
+        // bottom carrying the NEXT photo from the lap sequence.
+        // Skipped while hidden (list/info): collapsing the spacer jumps
+        // scroll → would mass-rebind + tick the odometer invisibly.
+        const lastY = mesh.userData.lastY as number
+        if (
+          activeRef.current &&
+          suppressWrap === 0 &&
+          y - lastY > L.cycleH * 0.5
+        ) {
+          const lap = Math.floor(nextIdx / N)
+          if (lap > lastLap) {
+            // new lap → reshuffle so consecutive laps differ
+            lastLap = lap
+            seq = shuffled(poolArr, WALL_SEED + lap * 7919)
+          }
+          bindPlane(mesh, seq[nextIdx % N])
+          nextIdx++
+          cbRef.current.onSeq((nextIdx % N) + 1)
+        }
+        mesh.userData.lastY = y
+
         mesh.position.set(L.cols[col].x, y, L.cols[col].depth)
-        const h = L.colW * SIZE_FACTOR[shape]
-        mesh.scale.set(L.colW, h, 1)
-        mesh.rotation.x = Math.max(-MAX_TILT, Math.min(MAX_TILT, vel * VEL_TILT))
+        mesh.scale.set(L.colW, L.colW / (mesh.userData.ar as number), 1)
+        mesh.rotation.x = Math.max(
+          -MAX_TILT,
+          Math.min(MAX_TILT, vel * VEL_TILT),
+        )
       }
       renderer.render(scene, camera)
 
-      // hover: raycast last pointer pos every frame + change-hysteresis
-      let candidate: number | null = null
-      if (pointerInside) {
+      // hover: card stays while the cursor is on the canvas; null hits
+      // (seams) are ignored — only leaving the canvas clears it
+      let candidate: string | null = null
+      if (!activeRef.current) {
+        setHover(null)
+      } else if (pointerInside) {
         raycaster.setFromCamera(pointerNdc, camera)
         const hits = raycaster.intersectObjects(planes, false)
-        const hit = hits.find((h) => h.object.visible && (h.object.material as THREE.MeshBasicMaterial).opacity > 0.5)
-        candidate = hit ? (hit.object.userData.workId as number) : null
+        const hit = hits.find(
+          (h) =>
+            (h.object as THREE.Mesh).visible &&
+            ((h.object as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity > 0.5,
+        )
+        const wp = hit ? ((hit.object.userData.wp as WallPhoto) ?? null) : null
+        candidate = wp ? wp.photo.thumb : null
       }
-      if (candidate === pendingId) pendingCount++
-      else {
-        pendingId = candidate
-        pendingCount = 1
-      }
-      if (pendingCount >= HOVER_HOLD) setHover(pendingId)
-
-      // odometer: scroll progress through the cycle → 1..SLOT_COUNT
-      const idx = 1 + Math.min(SLOT_COUNT - 1, Math.floor((s / L.cycleH) * SLOT_COUNT))
-      if (idx !== lastIdxRef.current) {
-        lastIdxRef.current = idx
-        cbRef.current.onSlotIndex(idx)
+      if (!pointerInside) {
+        setHover(null)
+      } else if (candidate !== null) {
+        if (candidate === pendingKey) pendingCount++
+        else {
+          pendingKey = candidate
+          pendingCount = 1
+        }
+        if (pendingCount >= HOVER_HOLD) setHover(pendingKey)
       }
     }
     raf = requestAnimationFrame(tick)
@@ -297,34 +386,93 @@ export default function WebGLGallery({ getScroll, isDark, onHover, onSlotIndex, 
 
     return () => {
       disposedRef.current = true
+      setPoolRef.current = null
       cancelAnimationFrame(raf)
-      window.removeEventListener('resize', onResize)
-      canvas.removeEventListener('pointermove', onMove)
-      canvas.removeEventListener('pointerleave', onLeave)
-      canvas.removeEventListener('click', onClick)
-      planes.forEach((m) => (m.material as THREE.MeshBasicMaterial).dispose())
+      window.removeEventListener("resize", onResize)
+      canvas.removeEventListener("pointermove", onMove)
+      canvas.removeEventListener("pointerleave", onLeave)
+      canvas.removeEventListener("click", onClick)
+      planes.forEach((m) => {
+        gsap.killTweensOf(m.material as THREE.MeshBasicMaterial)
+        ;(m.material as THREE.MeshBasicMaterial).dispose()
+      })
       geo.dispose()
-      texByWorkId.forEach((t) => t.dispose())
+      texCache.forEach((t) => t?.dispose())
+      texCache.clear()
       renderer.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── theme change → clear color ───────────────────────────────────────
+  // pool / category switch → re-seed the conveyor in place
+  useEffect(() => {
+    setPoolRef.current?.(pool)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool])
+
   useEffect(() => {
     rendererRef.current?.setClearColor(isDark ? 0x080808 : 0xfefefe, 1)
   }, [isDark])
 
-  const spacerHeight = cycleH * NUM_CYCLES
+  // ── active toggle → fade canvas + grow/collapse the scroll spacer ────
+  const firstRunRef = useRef(true)
+  useEffect(() => {
+    const c = canvasRef.current
+    const s = spacerRef.current
+    if (!c || !s) return
+    if (firstRunRef.current) {
+      firstRunRef.current = false
+      gsap.set(c, { opacity: active ? 1 : 0 })
+      gsap.set(s, { height: active ? cycleH * NUM_CYCLES : 0 })
+      return
+    }
+    if (active) {
+      gsap.to(c, {
+        opacity: 1,
+        duration: 0.5,
+        ease: "power2.inOut",
+        delay: 0.15,
+        overwrite: "auto",
+      })
+      gsap.to(s, {
+        height: cycleH * NUM_CYCLES,
+        duration: 0.5,
+        ease: "power2.inOut",
+        delay: 0.15,
+        overwrite: "auto",
+      })
+    } else {
+      gsap.to(c, {
+        opacity: 0,
+        duration: 0.35,
+        ease: "power2.inOut",
+        overwrite: "auto",
+      })
+      gsap.to(s, {
+        height: 0,
+        duration: 0.35,
+        ease: "power2.inOut",
+        overwrite: "auto",
+      })
+    }
+  }, [active, cycleH])
 
   return (
     <>
       <canvas
         ref={canvasRef}
-        style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', zIndex: 1, display: 'block' }}
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100vw",
+          height: "100vh",
+          zIndex: 1,
+          display: "block",
+          pointerEvents: active ? "auto" : "none",
+        }}
       />
       {/* transparent spacer creates the scrollable document height */}
-      <div style={{ height: spacerHeight, width: '100%', pointerEvents: 'none' }} />
+      <div ref={spacerRef} style={{ width: "100%", pointerEvents: "none" }} />
     </>
   )
 }

@@ -7,33 +7,41 @@ import {
   forwardRef,
   useMemo,
   useCallback,
-} from 'react'
-import Lenis from 'lenis'
-import gsap from 'gsap'
-import { ScrollTrigger } from 'gsap/ScrollTrigger'
-import WebGLGallery from './WebGLGallery'
-import Cursor from './Cursor'
-import { useRoute, nav, navReplace, type Mode } from './router'
+} from "react"
+import Lenis from "lenis"
+import gsap from "gsap"
+import { ScrollTrigger } from "gsap/ScrollTrigger"
+import WebGLGallery, { WALL_SEED } from "./WebGLGallery"
+import Cursor from "./Cursor"
+import Transition from "./Transition"
+import { useRoute, nav, navReplace, type Mode } from "./router"
 import {
-  WORKS,
-  getProjectImages,
+  SERIES,
+  CATEGORIES,
+  AVATAR,
+  WALL,
+  wallForCat,
+  seriesBySlug,
+  seriesNumber,
+  coverOf,
+  shuffled,
   COL_OFFSETS,
-  CSS_AR,
-  UB,
-  type Work,
-} from './shared'
+  type WallPhoto,
+  type Series,
+  type CatFilter,
+} from "./shared"
 
 gsap.registerPlugin(ScrollTrigger)
 
-type View = 'preloader' | 'main' | 'project'
+type View = "preloader" | "main" | "project"
 
 const NOISE = `url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>")`
 
 const MONO: React.CSSProperties = {
   fontFamily: "'IBM Plex Mono', monospace",
   fontWeight: 500,
-  letterSpacing: '0.1em',
-  textTransform: 'uppercase' as const,
+  letterSpacing: "0.1em",
+  textTransform: "uppercase" as const,
 }
 const DISPLAY: React.CSSProperties = {
   fontFamily: "'Space Grotesk', sans-serif",
@@ -41,9 +49,14 @@ const DISPLAY: React.CSSProperties = {
 }
 
 function useClock() {
-  const [time, setTime] = useState('')
+  const [time, setTime] = useState("")
   useEffect(() => {
-    const fmt = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const fmt = () =>
+      new Date().toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
     setTime(fmt())
     const id = setInterval(() => setTime(fmt()), 1000)
     return () => clearInterval(id)
@@ -55,10 +68,15 @@ function useClock() {
 function useWebGLOk() {
   return useMemo(() => {
     try {
-      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const reduce = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches
       if (reduce) return false
-      const c = document.createElement('canvas')
-      return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')))
+      const c = document.createElement("canvas")
+      return !!(
+        window.WebGLRenderingContext &&
+        (c.getContext("webgl") || c.getContext("experimental-webgl"))
+      )
     } catch {
       return false
     }
@@ -66,7 +84,7 @@ function useWebGLOk() {
 }
 
 // ── Rolling-digit Odometer ───────────────────────────────────────────────
-const STRIP = '01234567890'
+const STRIP = "01234567890"
 interface OdometerHandle {
   to: (v: number) => void
   raw: (v: number) => void
@@ -113,7 +131,7 @@ const Odometer = forwardRef<
         gsap.to(obj, {
           val: v,
           duration: 0.8,
-          ease: 'power2.inOut',
+          ease: "power2.inOut",
           onUpdate: () => {
             curRef.current = obj.val
             position(obj.val)
@@ -126,7 +144,9 @@ const Odometer = forwardRef<
 
   useLayoutEffect(() => {
     const measure = () => {
-      const cell = wrapRef.current?.querySelector('.od-cell') as HTMLElement | null
+      const cell = wrapRef.current?.querySelector(
+        ".od-cell",
+      ) as HTMLElement | null
       if (!cell) return
       const h = cell.offsetHeight
       if (h && h !== cellHRef.current) {
@@ -138,20 +158,39 @@ const Odometer = forwardRef<
     measure()
     const ro = new ResizeObserver(measure)
     if (wrapRef.current) ro.observe(wrapRef.current)
-    window.addEventListener('resize', measure)
+    window.addEventListener("resize", measure)
     return () => {
       ro.disconnect()
-      window.removeEventListener('resize', measure)
+      window.removeEventListener("resize", measure)
     }
   }, [])
 
   return (
-    <span ref={wrapRef} style={{ display: 'inline-flex', lineHeight: 1, verticalAlign: 'baseline' }}>
+    <span
+      ref={wrapRef}
+      style={{
+        display: "inline-flex",
+        lineHeight: 1,
+        verticalAlign: "baseline",
+      }}
+    >
       {Array.from({ length: digits }).map((_, i) => (
-        <span key={i} style={{ display: 'inline-block', overflow: 'hidden', height: cellH || undefined, verticalAlign: 'top' }}>
-          <span style={{ display: 'block', willChange: 'transform' }}>
-            {STRIP.split('').map((d, j) => (
-              <span key={j} className="od-cell" style={{ display: 'block', lineHeight: 1, ...digitStyle }}>
+        <span
+          key={i}
+          style={{
+            display: "inline-block",
+            overflow: "hidden",
+            height: cellH || undefined,
+            verticalAlign: "top",
+          }}
+        >
+          <span style={{ display: "block", willChange: "transform" }}>
+            {STRIP.split("").map((d, j) => (
+              <span
+                key={j}
+                className="od-cell"
+                style={{ display: "block", lineHeight: 1, ...digitStyle }}
+              >
                 {d}
               </span>
             ))}
@@ -163,28 +202,552 @@ const Odometer = forwardRef<
 })
 
 // ── Masked split-text chars (intro) ──────────────────────────────────────
-function Chars({ text, charStyle }: { text: string; charStyle?: React.CSSProperties }) {
+function Chars({
+  text,
+  charStyle,
+}: {
+  text: string
+  charStyle?: React.CSSProperties
+}) {
   return (
-    <span style={{ display: 'inline-block', overflow: 'hidden', verticalAlign: 'top' }}>
-      {text.split('').map((ch, i) => (
-        <span key={i} className="intro-char" style={{ display: 'inline-block', willChange: 'transform', ...charStyle }}>
-          {ch === ' ' ? '\u00A0' : ch}
+    <span
+      style={{
+        display: "inline-block",
+        overflow: "hidden",
+        verticalAlign: "top",
+      }}
+    >
+      {text.split("").map((ch, i) => (
+        <span
+          key={i}
+          className="intro-char"
+          style={{
+            display: "inline-block",
+            willChange: "transform",
+            ...charStyle,
+          }}
+        >
+          {ch === " " ? "\u00A0" : ch}
         </span>
       ))}
     </span>
   )
 }
 
+// ── View-transition choreography (reference-measured rhythm) ──────────
+// NOTE: the Transition wrapper (el) must NEVER get a transform — a
+// transformed ancestor becomes the containing block for fixed descendants.
+// Motion lives on children only; the exit drift runs on the .list-stage.
+
+const listEnter = (el: HTMLElement) => {
+  const cards = el.querySelectorAll(".list-card")
+  const stage = el.querySelector(".list-stage")
+  gsap.killTweensOf([el, ...cards, ...(stage ? [stage] : [])])
+  gsap.set(el, { opacity: 1 })
+  if (stage) gsap.set(stage, { y: 0 })
+  gsap.fromTo(
+    cards,
+    { opacity: 0, y: 26, scale: 1.04 },
+    {
+      opacity: 1,
+      y: 0,
+      scale: 1,
+      duration: 0.6,
+      ease: "power2.inOut",
+      stagger: 0.045,
+      delay: 0.3,
+    },
+  )
+}
+const fadeExit =
+  (duration: number) =>
+  (el: HTMLElement, done: () => void): void => {
+    gsap.killTweensOf(el)
+    gsap.to(el, {
+      opacity: 0,
+      duration,
+      ease: "power2.inOut",
+      onComplete: done,
+    })
+  }
+
+const listExit = (el: HTMLElement, done: () => void) => {
+  const stage = el.querySelector(".list-stage")
+  if (stage) {
+    gsap.killTweensOf(stage)
+    gsap.to(stage, { y: -10, duration: 0.25, ease: "power2.inOut" })
+  }
+  fadeExit(0.25)(el, done)
+}
+
+// DOM masonry fallback: cards stagger in shortly after the beat
+const masonryEnter = (el: HTMLElement) => {
+  const cards = el.querySelectorAll(".masonry-card")
+  gsap.killTweensOf([el, ...cards])
+  gsap.set(el, { opacity: 1 })
+  gsap.fromTo(
+    cards,
+    { opacity: 0, y: 20 },
+    {
+      opacity: 1,
+      y: 0,
+      duration: 0.5,
+      ease: "power2.inOut",
+      stagger: 0.03,
+      delay: 0.15,
+    },
+  )
+}
+const masonryExit = fadeExit(0.25)
+
+const infoEnter = (el: HTMLElement) => {
+  const chars = el.querySelectorAll(".info-title .intro-char")
+  const blocks = el.querySelectorAll(".info-block")
+  const portrait = el.querySelectorAll(".info-portrait")
+  const policy = el.querySelectorAll(".info-policy")
+  gsap.killTweensOf([el, ...chars, ...blocks, ...portrait, ...policy])
+  gsap.set(el, { opacity: 0 })
+  gsap.to(el, { opacity: 1, duration: 0.6, ease: "power2.inOut", delay: 0.7 })
+  gsap.fromTo(
+    chars,
+    { yPercent: 110, rotate: 4 },
+    {
+      yPercent: 0,
+      rotate: 0,
+      duration: 0.7,
+      ease: "power2.inOut",
+      stagger: 0.03,
+      delay: 0.85,
+    },
+  )
+  gsap.fromTo(
+    blocks,
+    { opacity: 0, y: 14 },
+    {
+      opacity: 1,
+      y: 0,
+      duration: 0.5,
+      ease: "power2.inOut",
+      stagger: 0.045,
+      delay: 0.95,
+    },
+  )
+  gsap.fromTo(
+    portrait,
+    { scale: 1.5, opacity: 0 },
+    { scale: 1, opacity: 0.82, duration: 1, ease: "power2.inOut", delay: 1 },
+  )
+  gsap.fromTo(
+    policy,
+    { opacity: 0 },
+    { opacity: 1, duration: 0.5, ease: "power2.inOut", delay: 1.2 },
+  )
+}
+const infoExit = fadeExit(0.5)
+
+// ── Chrome components ─────────────────────────────────────────────────
+// NOTE: these MUST live at module scope (see the remount bug note in git
+// history) — useClock ticks would otherwise re-create them every second.
+
+function NavBar({
+  isDark,
+  fg,
+  mode,
+  cat,
+  infoOpen,
+  projectSeries,
+  onClose,
+  onToggleTheme,
+}: {
+  isDark: boolean
+  fg: string
+  mode: Mode
+  cat: CatFilter
+  infoOpen: boolean
+  projectSeries?: Series | null
+  onClose?: () => void
+  onToggleTheme: () => void
+}) {
+  return (
+    <header
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 600,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "0 20px",
+        height: 60,
+        gap: 20,
+        background: "color-mix(in srgb, var(--bg) 88%, transparent)",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+        borderBottom: "1px solid color-mix(in srgb, var(--fg) 8%, transparent)",
+      }}
+    >
+      <button
+        onClick={() => nav("#/")}
+        style={{
+          ...DISPLAY,
+          fontSize: 13,
+          color: fg,
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          whiteSpace: "nowrap",
+          letterSpacing: "0.04em",
+        }}
+      >
+        SPIKE HU
+      </button>
+      {!onClose && (
+        <span
+          className="nav-center"
+          style={{
+            ...MONO,
+            fontSize: 10,
+            color: fg,
+            opacity: 0.42,
+            textAlign: "center",
+            flex: 1,
+          }}
+        >
+          PHOTOGRAPHER AVAILABLE WORLDWIDE&nbsp;|&nbsp;BASED IN SH
+        </span>
+      )}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 18,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {onClose ? (
+          <>
+            {projectSeries && (
+              <span style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.45 }}>
+                {projectSeries.category.toUpperCase()} — {projectSeries.name}
+              </span>
+            )}
+            <button
+              onClick={onClose}
+              style={{
+                ...MONO,
+                fontSize: 11,
+                color: fg,
+                background: "none",
+                border: "1px solid var(--fg)",
+                padding: "4px 10px",
+                cursor: "pointer",
+              }}
+            >
+              [CLOSE]
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ display: "flex", alignItems: "center" }}>
+              {(["overview", "list"] as Mode[]).map((m) => (
+                <span key={m} style={{ display: "flex", alignItems: "center" }}>
+                  <button
+                    onClick={() =>
+                      nav(
+                        m === "overview"
+                          ? cat === "all"
+                            ? "#/"
+                            : `#/${cat}`
+                          : cat === "all"
+                            ? "#/list"
+                            : `#/${cat}/list`,
+                      )
+                    }
+                    style={{
+                      ...MONO,
+                      fontSize: 11,
+                      color: fg,
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      opacity: mode === m && !infoOpen ? 1 : 0.32,
+                      padding: "0 2px",
+                    }}
+                  >
+                    {m.toUpperCase()}
+                  </button>
+                  <span
+                    style={{
+                      ...MONO,
+                      fontSize: 11,
+                      color: fg,
+                      opacity: 0.22,
+                      padding: "0 5px",
+                    }}
+                  >
+                    /
+                  </span>
+                </span>
+              ))}
+              <button
+                onClick={() => {
+                  const base =
+                    cat === "all"
+                      ? mode === "list"
+                        ? "#/list"
+                        : "#/"
+                      : mode === "list"
+                        ? `#/${cat}/list`
+                        : `#/${cat}`
+                  nav(infoOpen ? base : `${base}/info`)
+                }}
+                style={{
+                  ...MONO,
+                  fontSize: 11,
+                  color: fg,
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  opacity: infoOpen ? 1 : 0.32,
+                  padding: "0 2px",
+                }}
+              >
+                INFO
+              </button>
+            </div>
+            <a
+              href="mailto:1162844453@qq.com"
+              style={{
+                ...MONO,
+                fontSize: 10,
+                color: fg,
+                opacity: 0.45,
+                textDecoration: "none",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.textDecoration = "underline")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.textDecoration = "none")
+              }
+            >
+              1162844453@QQ.COM
+            </a>
+            <button
+              onClick={onToggleTheme}
+              title="Toggle theme"
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: "50%",
+                border:
+                  "1px solid color-mix(in srgb, var(--fg) 27%, transparent)",
+                background: "none",
+                cursor: "pointer",
+                color: fg,
+                fontSize: 9,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              {isDark ? "○" : "●"}
+            </button>
+          </>
+        )}
+      </div>
+    </header>
+  )
+}
+
+function HoverPanel({
+  wp,
+  panelRef,
+  bg,
+  fg,
+}: {
+  wp: WallPhoto
+  panelRef: React.RefObject<HTMLDivElement | null>
+  bg: string
+  fg: string
+}) {
+  const { series, index } = wp
+  return (
+    <div
+      ref={panelRef}
+      style={{
+        position: "fixed",
+        bottom: 190,
+        left: 40,
+        zIndex: 500,
+        background: bg,
+        border: "1px solid color-mix(in srgb, var(--fg) 9%, transparent)",
+        padding: "18px 22px 14px",
+        pointerEvents: "none",
+        width: 292,
+        boxShadow: "0 8px 52px rgba(0,0,0,0.35)",
+        opacity: 0,
+        willChange: "opacity",
+      }}
+    >
+      <div
+        style={{
+          ...DISPLAY,
+          fontSize: 54,
+          lineHeight: 1,
+          color: fg,
+          marginBottom: 7,
+        }}
+      >
+        {String(seriesNumber(series)).padStart(2, "0")}
+      </div>
+      <div
+        style={{
+          ...DISPLAY,
+          fontSize: 14,
+          color: fg,
+          marginBottom: 11,
+          letterSpacing: "0.03em",
+        }}
+      >
+        {series.name}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 3,
+          marginBottom: 14,
+        }}
+      >
+        {(
+          [
+            ["CATEGORY", series.category.toUpperCase()],
+            ["YEAR", String(series.year)],
+            ["PHOTOS", String(series.photos.length)],
+            ["FRAME", `${index + 1} / ${series.photos.length}`],
+          ] as [string, string][]
+        ).map(([k, v]) => (
+          <div key={k} style={{ display: "flex", gap: 10 }}>
+            <span
+              style={{
+                ...MONO,
+                fontSize: 9,
+                color: fg,
+                opacity: 0.36,
+                minWidth: 48,
+              }}
+            >
+              {k}
+            </span>
+            <span style={{ ...MONO, fontSize: 9, color: fg }}>{v}</span>
+          </div>
+        ))}
+      </div>
+      <div
+        style={{
+          ...MONO,
+          fontSize: 10,
+          color: fg,
+          textAlign: "right",
+          borderTop: "1px solid color-mix(in srgb, var(--fg) 8%, transparent)",
+          paddingTop: 9,
+        }}
+      >
+        [EXPLORE]
+      </div>
+    </div>
+  )
+}
+
+// ── Footer filter words ──────────────────────────────────────────────────
+function FilterWords({
+  cat,
+  fg,
+  onPick,
+}: {
+  cat: CatFilter
+  fg: string
+  onPick: (c: CatFilter) => void
+}) {
+  const words: { slug: CatFilter; label: string }[] = [
+    { slug: "all", label: "all" },
+    ...CATEGORIES.map((c) => ({ slug: c.slug as CatFilter, label: c.slug })),
+  ]
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: "50%",
+        transform: "translateX(-50%)",
+        bottom: 6,
+        display: "flex",
+        alignItems: "baseline",
+        gap: 18,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {words.map((w, i) => (
+        <span key={w.slug} style={{ display: "inline-flex", alignItems: "baseline" }}>
+          <button
+            data-cursor
+            onClick={() => onPick(w.slug)}
+            style={{
+              ...DISPLAY,
+              fontSize: "clamp(30px, 4.6vw, 64px)",
+              lineHeight: 0.9,
+              color: fg,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              opacity: cat === w.slug ? 1 : 0.15,
+              transition: "opacity 0.22s ease",
+              textDecoration:
+                cat === w.slug ? "underline" : "none",
+              textDecorationThickness: 2,
+              textUnderlineOffset: 6,
+            }}
+            onMouseEnter={(e) => {
+              if (cat !== w.slug) e.currentTarget.style.opacity = "0.55"
+            }}
+            onMouseLeave={(e) => {
+              if (cat !== w.slug) e.currentTarget.style.opacity = "0.15"
+            }}
+          >
+            {w.label}
+            {i < words.length - 1 ? (
+              <span style={{ opacity: 0.35, marginLeft: 18 }}>,</span>
+            ) : null}
+          </button>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export default function App() {
   const route = useRoute()
   const [introDone, setIntroDone] = useState(false)
-  const [hoveredWork, setHoveredWork] = useState<Work | null>(null)
-  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
-    (typeof localStorage !== 'undefined' && (localStorage.getItem('theme') as 'light' | 'dark')) || 'light',
+  const [hoveredWP, setHoveredWP] = useState<WallPhoto | null>(null)
+  // panel content lingers after hover clears → no mount/unmount blink
+  const [panelWP, setPanelWP] = useState<WallPhoto | null>(null)
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    (() => {
+      try {
+        return (localStorage.getItem("theme") as "light" | "dark") || "light"
+      } catch {
+        return "light"
+      }
+    })(),
   )
   const [projectIndex, setProjectIndex] = useState(0)
 
   const lenisRef = useRef<Lenis | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const preloaderRef = useRef<HTMLDivElement>(null)
   const counterRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
@@ -193,7 +756,7 @@ export default function App() {
   const projectOdomRef = useRef<OdometerHandle>(null)
   const projectIdxRef = useRef(0)
   const routePhotoRef = useRef(route.photo)
-  const lastMainModeRef = useRef<Mode>('overview')
+  const lastMainModeRef = useRef<Mode>("overview")
   const clock = useClock()
   const webglOk = useWebGLOk()
 
@@ -204,34 +767,56 @@ export default function App() {
   )
 
   // ── Route → view state ─────────────────────────────────────────────
-  // The hash is the single source of truth once the intro has played;
-  // deep links (#/p/2/5) land directly on the routed view.
-  const routedWork = route.workId !== null ? WORKS.find((w) => w.id === route.workId) ?? null : null
-  const view: View = !introDone ? 'preloader' : route.view === 'project' && routedWork ? 'project' : 'main'
-  const mode: Mode = view === 'project' ? 'overview' : route.mode
-  const infoOpen = view === 'main' && route.info
-  const projectWork = view === 'project' ? routedWork : null
+  // The hash is the single source of truth once the intro has played.
+  const projectSeries =
+    route.view === "project" ? seriesBySlug(route.series ?? "") : null
+  const view: View = !introDone
+    ? "preloader"
+    : route.view === "project" && projectSeries
+      ? "project"
+      : "main"
+  const mode: Mode = view === "project" ? "overview" : route.mode
+  const infoOpen = view === "main" && route.info
+  const pool = useMemo(() => wallForCat(route.cat), [route.cat])
   routePhotoRef.current = route.photo
 
-  const isDark = theme === 'dark'
-  const bg = isDark ? '#080808' : '#FEFEFE'
-  const fg = isDark ? '#FEFEFE' : '#080808'
+  const isDark = theme === "dark"
+  const bg = "var(--bg)"
+  const fg = "var(--fg)"
 
   function toggleTheme() {
-    const next: 'light' | 'dark' = isDark ? 'light' : 'dark'
-    setTheme(next)
-    localStorage.setItem('theme', next)
+    const next: "light" | "dark" = isDark ? "light" : "dark"
+    try {
+      localStorage.setItem("theme", next)
+    } catch {
+      /* private mode — theme just won't persist */
+    }
+    const apply = () => {
+      document.documentElement.dataset.theme = next
+      setTheme(next)
+    }
+    if (document.startViewTransition) {
+      document.startViewTransition(apply)
+    } else {
+      apply()
+    }
   }
 
-  const columns = Array.from({ length: 4 }, (_, ci) => WORKS.filter((_, i) => i % 4 === ci))
-  const projectImages = projectWork ? getProjectImages(projectWork) : []
-  const currentProjectImg = projectImages[projectIndex]
+  const fallbackCols = useMemo(
+    () =>
+      Array.from({ length: 4 }, (_, ci) =>
+        pool.filter((_, i) => i % 4 === ci),
+      ),
+    [pool],
+  )
+  const projectImages = projectSeries ? projectSeries.photos : []
+  const currentProjectPhoto = projectImages[projectIndex]
 
   // ── Lenis + GSAP/ScrollTrigger wiring (once) ─────────────────────────
   useEffect(() => {
-    const lenis = new Lenis({ normalizeWheel: false, smoothTouch: false })
+    const lenis = new Lenis()
     lenisRef.current = lenis
-    lenis.on('scroll', ScrollTrigger.update)
+    lenis.on("scroll", ScrollTrigger.update)
     const tickerFn = (t: number) => lenis.raf(t * 1000)
     gsap.ticker.add(tickerFn)
     gsap.ticker.lagSmoothing(0)
@@ -249,68 +834,136 @@ export default function App() {
     else lenis.start()
   }, [infoOpen])
 
-  // Reset scroll + odometer whenever the (WebGL) overview is entered
+  // Reset scroll + odometer whenever the (WebGL) overview is entered, or
+  // the category filter switches (conveyor re-seeds → start from the top)
   useEffect(() => {
-    if (view === 'main' && mode === 'overview') {
+    if (view === "main" && mode === "overview") {
       lenisRef.current?.scrollTo(0, { immediate: true })
       footerOdomRef.current?.to(1)
     }
-  }, [view, mode])
+  }, [view, mode, route.cat])
 
   // remember the last main mode so closing a project returns to it
   useEffect(() => {
-    if (view === 'main' && (mode === 'overview' || mode === 'list')) lastMainModeRef.current = mode
+    if (view === "main" && (mode === "overview" || mode === "list"))
+      lastMainModeRef.current = mode
   }, [view, mode])
 
-  // ── Intro ────────────────────────────────────────────────────────────
+  // leaving the overview must drop any lingering hover
   useEffect(() => {
-    if (view !== 'preloader') return
+    if (view !== "main" || mode !== "overview") setHoveredWP(null)
+  }, [view, mode])
+
+  // ── Hover panel: stays mounted through its fade-out ─────────────────
+  useEffect(() => {
+    if (hoveredWP) {
+      setPanelWP(hoveredWP)
+      return
+    }
+    const t = window.setTimeout(() => setPanelWP(null), 320)
+    return () => window.clearTimeout(t)
+  }, [hoveredWP])
+
+  useLayoutEffect(() => {
+    const el = panelRef.current
+    if (!el) return
+    gsap.killTweensOf(el)
+    gsap.to(el, {
+      opacity: hoveredWP ? 1 : 0,
+      duration: hoveredWP ? 0.22 : 0.18,
+      ease: "power2.inOut",
+    })
+  }, [hoveredWP, panelWP])
+
+  // ── Intro: REAL loading progress ─────────────────────────────────────
+  // The counter/bar can never outrun the actual bytes: displayed % is
+  // clamped to (loaded thumbs / first-lap 36). The char animation keeps
+  // its choreography; the gate opens when both finish.
+  useEffect(() => {
+    if (view !== "preloader") return
+
+    // first lap of the wall — the exact photos the gallery binds first
+    // (same seed as WebGLGallery lap 0 → zero double-loading)
+    const firstLap = shuffled(WALL, WALL_SEED).slice(0, 36)
+    const loadState = { loaded: 0 }
+    firstLap.forEach((wp) => {
+      const img = new Image()
+      const done = () => {
+        loadState.loaded++
+      }
+      img.onload = done
+      img.onerror = done
+      img.src = wp.photo.thumb
+    })
+
+    let finishTimer = 0
+    let poller = 0
     const ctx = gsap.context(() => {
-      gsap.to(
-        { val: 0 },
-        {
-          val: 100,
-          duration: 2.6,
-          ease: 'power2.inOut',
-          onUpdate: function () {
-            const v = Math.round(this.targets()[0].val)
-            if (counterRef.current) counterRef.current.textContent = `${String(v).padStart(3, '0')}%`
-          },
-          onComplete: () => setTimeout(() => setIntroDone(true), 350),
+      const prog = { shown: 0 }
+      gsap.to(prog, {
+        shown: 100,
+        duration: 2.8,
+        ease: "power2.inOut",
+        onUpdate: () => {
+          const real = (loadState.loaded / firstLap.length) * 100
+          const v = Math.min(prog.shown, real)
+          if (counterRef.current)
+            counterRef.current.textContent = `${String(Math.round(v)).padStart(3, "0")}%`
+          if (barRef.current)
+            barRef.current.style.transform = `scaleX(${v / 100})`
         },
-      )
-      gsap.from('.intro-char', {
+        onComplete: () => {
+          const finish = () => {
+            finishTimer = window.setTimeout(() => setIntroDone(true), 350)
+          }
+          if (loadState.loaded >= firstLap.length) finish()
+          else
+            poller = window.setInterval(() => {
+              if (loadState.loaded >= firstLap.length) {
+                window.clearInterval(poller)
+                // push the counter to the real 100 before leaving
+                if (counterRef.current) counterRef.current.textContent = "100%"
+                if (barRef.current)
+                  barRef.current.style.transform = "scaleX(1)"
+                finish()
+              }
+            }, 80)
+        },
+      })
+      gsap.from(".intro-char", {
         yPercent: 100,
         rotate: 7,
         duration: 0.7,
-        ease: 'power2.inOut',
+        ease: "power2.inOut",
         stagger: 0.03,
         delay: 0.05,
       })
-      gsap.fromTo(
-        barRef.current,
-        { scaleX: 0 },
-        { scaleX: 1, duration: 2.6, ease: 'power2.inOut', transformOrigin: 'left center' },
-      )
     }, preloaderRef)
-    return () => ctx.revert()
+    return () => {
+      window.clearTimeout(finishTimer)
+      window.clearInterval(poller)
+      ctx.revert()
+    }
   }, [view])
 
   // ── Project: per-image fade/scale + scrubbed odometer ────────────────
   useEffect(() => {
-    if (view !== 'project' || !projectWork) return
+    if (view !== "project" || !projectSeries) return
     const lenis = lenisRef.current
     const imgs = projectImages
-    const workId = projectWork.id
-    // deep link (#/p/:id/:n) → land on the routed photo, clamped
-    const startIdx = Math.min(Math.max(0, routePhotoRef.current - 1), imgs.length - 1)
+    const slug = projectSeries.slug
+    // deep link (#/p/:series/:n) → land on the routed photo, clamped
+    const startIdx = Math.min(
+      Math.max(0, routePhotoRef.current - 1),
+      imgs.length - 1,
+    )
     lenis?.scrollTo(startIdx * window.innerHeight, { immediate: true })
     projectIdxRef.current = startIdx
     setProjectIndex(startIdx)
     projectOdomRef.current?.raw(startIdx + 1)
 
     const ctx = gsap.context(() => {
-      gsap.utils.toArray<HTMLElement>('.project-img').forEach((img) => {
+      gsap.utils.toArray<HTMLElement>(".project-img").forEach((img) => {
         gsap.fromTo(
           img,
           { opacity: 0, scale: 1.08 },
@@ -318,15 +971,19 @@ export default function App() {
             opacity: 1,
             scale: 1,
             duration: 0.9,
-            ease: 'power2.inOut',
-            scrollTrigger: { trigger: img, start: 'top 80%', toggleActions: 'play none none reverse' },
+            ease: "power2.inOut",
+            scrollTrigger: {
+              trigger: img,
+              start: "top 80%",
+              toggleActions: "play none none reverse",
+            },
           },
         )
       })
       ScrollTrigger.create({
         trigger: projectRef.current,
-        start: 'top top',
-        end: 'bottom bottom',
+        start: "top top",
+        end: "bottom bottom",
         onUpdate: (self) => {
           const v = 1 + self.progress * (imgs.length - 1)
           projectOdomRef.current?.raw(v)
@@ -335,7 +992,7 @@ export default function App() {
             projectIdxRef.current = intIdx
             setProjectIndex(intIdx)
             // keep the address in sync without spamming history
-            navReplace(`#/p/${workId}/${intIdx + 1}`)
+            navReplace(`#/p/${slug}/${intIdx + 1}`)
           }
         },
       })
@@ -344,247 +1001,794 @@ export default function App() {
     }, projectRef)
     return () => ctx.revert()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, projectWork, projectImages.length])
+  }, [view, projectSeries, projectImages.length])
 
   // hash → scroll: tick clicks / back / forward land on the routed photo
   useEffect(() => {
-    if (view !== 'project' || !projectWork || !projectImages.length) return
-    const idx = Math.min(Math.max(0, route.photo - 1), projectImages.length - 1)
+    if (view !== "project" || !projectSeries || !projectImages.length) return
+    const idx = Math.min(
+      Math.max(0, route.photo - 1),
+      projectImages.length - 1,
+    )
     if (idx !== projectIdxRef.current) {
       projectIdxRef.current = idx
       setProjectIndex(idx)
       lenisRef.current?.scrollTo(idx * window.innerHeight, { duration: 1.2 })
     }
-  }, [route.photo, view, projectWork, projectImages.length])
+  }, [route.photo, view, projectSeries, projectImages.length])
 
-  function openProject(work: Work) {
-    setHoveredWork(null)
-    nav(`#/p/${work.id}`)
+  function openProject(wp: WallPhoto) {
+    setHoveredWP(null)
+    nav(`#/p/${wp.series.slug}/${wp.index + 1}`)
+  }
+  function openSeries(series: Series) {
+    setHoveredWP(null)
+    nav(`#/p/${series.slug}`)
   }
   function closeProject() {
-    nav(lastMainModeRef.current === 'list' ? '#/list' : '#/')
+    const cat = route.cat === "all" ? "" : `${route.cat}/`
+    nav(lastMainModeRef.current === "list" ? `#/${cat}list` : `#/${cat || ""}`)
   }
   function goToProjectImage(i: number) {
-    if (projectWork) nav(`#/p/${projectWork.id}/${i + 1}`)
+    if (projectSeries) nav(`#/p/${projectSeries.slug}/${i + 1}`)
   }
-
-  // ── Nav bar ──────────────────────────────────────────────────────────
-  function NavBar({ onClose }: { onClose?: () => void }) {
-    return (
-      <header
-        style={{
-          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 600,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '0 20px', height: 60, gap: 20,
-          background: isDark ? 'rgba(8,8,8,0.88)' : 'rgba(254,254,254,0.88)',
-          backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
-          borderBottom: `1px solid ${fg}14`,
-        }}
-      >
-        <button
-          onClick={() => nav('#/')}
-          style={{ ...DISPLAY, fontSize: 13, color: fg, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap', letterSpacing: '0.04em' }}
-        >
-          YOUR NAME
-        </button>
-        {!onClose && (
-          <span className="nav-center" style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.42, textAlign: 'center', flex: 1 }}>
-            PHOTOGRAPHER AVAILABLE WORLDWIDE&nbsp;|&nbsp;BASED IN UK
-          </span>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 18, whiteSpace: 'nowrap' }}>
-          {onClose ? (
-            <>
-              {currentProjectImg && (
-                <span style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.45 }}>
-                  {currentProjectImg.category.toUpperCase()} — {currentProjectImg.title}
-                </span>
-              )}
-              <button onClick={onClose} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: `1px solid ${fg}`, padding: '4px 10px', cursor: 'pointer' }}>[CLOSE]</button>
-            </>
-          ) : (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                {(['overview', 'list'] as Mode[]).map((m) => (
-                  <span key={m} style={{ display: 'flex', alignItems: 'center' }}>
-                    <button onClick={() => nav(m === 'overview' ? '#/' : `#/${m}`)} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: 'none', cursor: 'pointer', opacity: mode === m && !infoOpen ? 1 : 0.32, padding: '0 2px' }}>{m.toUpperCase()}</button>
-                    <span style={{ ...MONO, fontSize: 11, color: fg, opacity: 0.22, padding: '0 5px' }}>/</span>
-                  </span>
-                ))}
-                <button onClick={() => nav(infoOpen ? (mode === 'list' ? '#/list' : '#/') : mode === 'list' ? '#/list/info' : '#/info')} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: 'none', cursor: 'pointer', opacity: infoOpen ? 1 : 0.32, padding: '0 2px' }}>INFO</button>
-              </div>
-              <a href="mailto:info@yourmail.com" style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.45, textDecoration: 'none' }} onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')} onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}>INFO@YOURMAIL.COM</a>
-              <button onClick={toggleTheme} title="Toggle theme" style={{ width: 22, height: 22, borderRadius: '50%', border: `1px solid ${fg}45`, background: 'none', cursor: 'pointer', color: fg, fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{isDark ? '○' : '●'}</button>
-            </>
-          )}
-        </div>
-      </header>
-    )
-  }
-
-  function HoverPanel({ work }: { work: Work }) {
-    const idx = WORKS.findIndex((w) => w.id === work.id) + 1
-    return (
-      <div style={{ position: 'fixed', bottom: 190, left: 40, zIndex: 500, background: bg, border: `1px solid ${fg}16`, padding: '18px 22px 14px', pointerEvents: 'none', width: 292, boxShadow: isDark ? '0 8px 52px rgba(0,0,0,0.75)' : '0 8px 52px rgba(0,0,0,0.10)', animation: 'panelIn 0.22s ease forwards' }}>
-        <div style={{ ...DISPLAY, fontSize: 54, lineHeight: 1, color: fg, marginBottom: 7 }}>{String(idx).padStart(2, '0')}</div>
-        <div style={{ ...DISPLAY, fontSize: 14, color: fg, marginBottom: 11, letterSpacing: '0.03em' }}>{work.title}</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 14 }}>
-          {([['AGENCY', work.agency], ['CLIENT', work.client], ['TYPE', work.type], ['YEAR', String(work.year)]] as [string, string][]).map(([k, v]) => (
-            <div key={k} style={{ display: 'flex', gap: 10 }}>
-              <span style={{ ...MONO, fontSize: 9, color: fg, opacity: 0.36, minWidth: 48 }}>{k}</span>
-              <span style={{ ...MONO, fontSize: 9, color: fg }}>{v}</span>
-            </div>
-          ))}
-        </div>
-        <div style={{ ...MONO, fontSize: 10, color: fg, textAlign: 'right', borderTop: `1px solid ${fg}14`, paddingTop: 9 }}>[EXPLORE]</div>
-      </div>
-    )
+  function pickCat(c: CatFilter) {
+    const base = c === "all" ? "" : `/${c}`
+    nav(mode === "list" ? `#${base}/list`.replace("//", "/") : `#${base || "/"}`)
   }
 
   return (
-    <div style={{ background: bg, color: fg, minHeight: '100vh', transition: 'background 0.35s ease, color 0.35s ease' }}>
+    <div
+      style={{
+        background: bg,
+        color: fg,
+        minHeight: "100vh",
+      }}
+    >
       <style>{`
-        @keyframes panelIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         .nav-center { display: flex !important; }
         @media (max-width: 1139px) { .nav-center { display: none !important; } }
       `}</style>
 
-      <div style={{ position: 'fixed', inset: 0, zIndex: 9999, pointerEvents: 'none', backgroundImage: NOISE, backgroundRepeat: 'repeat', backgroundSize: '200px 200px', opacity: 0.05 }} />
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 9999,
+          pointerEvents: "none",
+          backgroundImage: NOISE,
+          backgroundRepeat: "repeat",
+          backgroundSize: "200px 200px",
+          opacity: 0.05,
+        }}
+      />
 
       <Cursor />
 
       {/* ── PRELOADER ─────────────────────────────────────────────────── */}
-      {view === 'preloader' && (
-        <div ref={preloaderRef} style={{ position: 'fixed', inset: 0, background: bg, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '0 20px 36px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+      {view === "preloader" && (
+        <div
+          ref={preloaderRef}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: bg,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "flex-end",
+            padding: "0 20px 36px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-end",
+            }}
+          >
             <div>
-              <div style={{ marginBottom: 4 }}><Chars text="YOUR NAME" charStyle={{ ...MONO, fontSize: 11, color: fg, opacity: 0.44 }} /></div>
-              <div style={{ marginBottom: 4, whiteSpace: 'nowrap' }}><Chars text="PORTRAIT / STREET / TRAVEL" charStyle={{ ...MONO, fontSize: 11, color: fg, opacity: 0.44 }} /></div>
-              <div style={{ marginBottom: 14, whiteSpace: 'nowrap' }}><Chars text="PHOTOGRAPHY / FOLIO '26" charStyle={{ ...MONO, fontSize: 11, color: fg, opacity: 0.44 }} /></div>
-              <div style={{ overflow: 'hidden' }}><Chars text="YOUR NAME /" charStyle={{ ...DISPLAY, fontSize: 'clamp(44px, 6.8vw, 98px)', lineHeight: 0.9, color: fg }} /></div>
+              <div style={{ marginBottom: 4 }}>
+                <Chars
+                  text="SPIKE HU"
+                  charStyle={{
+                    ...MONO,
+                    fontSize: 11,
+                    color: fg,
+                    opacity: 0.44,
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: 4, whiteSpace: "nowrap" }}>
+                <Chars
+                  text="STREET / SCENERY / LIVE"
+                  charStyle={{
+                    ...MONO,
+                    fontSize: 11,
+                    color: fg,
+                    opacity: 0.44,
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: 14, whiteSpace: "nowrap" }}>
+                <Chars
+                  text="PHOTOGRAPHY / FOLIO '26"
+                  charStyle={{
+                    ...MONO,
+                    fontSize: 11,
+                    color: fg,
+                    opacity: 0.44,
+                  }}
+                />
+              </div>
+              <div style={{ overflow: "hidden" }}>
+                <Chars
+                  text="SPIKE HU /"
+                  charStyle={{
+                    ...DISPLAY,
+                    fontSize: "clamp(44px, 6.8vw, 98px)",
+                    lineHeight: 0.9,
+                    color: fg,
+                  }}
+                />
+              </div>
             </div>
-            <div ref={counterRef} style={{ ...DISPLAY, fontSize: 'clamp(56px, 6.6vw, 95px)', lineHeight: 1, color: fg, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>000%</div>
+            <div
+              ref={counterRef}
+              style={{
+                ...DISPLAY,
+                fontSize: "clamp(56px, 6.6vw, 95px)",
+                lineHeight: 1,
+                color: fg,
+                fontVariantNumeric: "tabular-nums",
+                textAlign: "right",
+              }}
+            >
+              000%
+            </div>
           </div>
-          <div ref={barRef} style={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: 1, background: fg, opacity: 0.22, transform: 'scaleX(0)', transformOrigin: 'left center' }} />
+          <div
+            ref={barRef}
+            style={{
+              position: "absolute",
+              bottom: 0,
+              left: 0,
+              width: "100%",
+              height: 1,
+              background: fg,
+              opacity: 0.22,
+              transform: "scaleX(0)",
+              transformOrigin: "left center",
+            }}
+          />
         </div>
       )}
 
       {/* ── MAIN ─────────────────────────────────────────────────────── */}
-      {view === 'main' && (
+      {view === "main" && (
         <>
-          <NavBar />
-          {hoveredWork && <HoverPanel work={hoveredWork} />}
+          <NavBar
+            isDark={isDark}
+            fg={fg}
+            mode={mode}
+            cat={route.cat}
+            infoOpen={infoOpen}
+            projectSeries={null}
+            onToggleTheme={toggleTheme}
+          />
+          {panelWP && (
+            <HoverPanel wp={panelWP} panelRef={panelRef} bg={bg} fg={fg} />
+          )}
 
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 70, zIndex: 350, pointerEvents: 'none', background: `linear-gradient(to bottom, ${bg}, transparent)` }} />
-          <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: 220, zIndex: 350, pointerEvents: 'none', background: `linear-gradient(to top, ${bg} 45%, transparent)` }} />
+          <div
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 70,
+              zIndex: 350,
+              pointerEvents: "none",
+              background: "linear-gradient(to bottom, var(--bg), transparent)",
+            }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: 220,
+              zIndex: 350,
+              pointerEvents: "none",
+              background: "linear-gradient(to top, var(--bg) 45%, transparent)",
+            }}
+          />
 
-          {mode === 'overview' &&
-            (webglOk ? (
-              <WebGLGallery
-                getScroll={getScroll}
-                isDark={isDark}
-                onHover={setHoveredWork}
-                onSlotIndex={(i) => footerOdomRef.current?.to(i)}
-                onPick={openProject}
-              />
-            ) : (
-              /* DOM masonry fallback (no WebGL / reduced motion) */
-              <section style={{ paddingTop: 80, paddingBottom: 200, paddingLeft: 40, paddingRight: 40 }}>
-                <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start' }}>
-                  {columns.map((colWorks, ci) => (
-                    <div key={ci} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 28, marginTop: COL_OFFSETS[ci] }}>
-                      {colWorks.map((work) => (
-                        <div data-cursor key={work.id} style={{ aspectRatio: CSS_AR[work.shape], overflow: 'hidden', cursor: 'pointer', background: isDark ? '#141414' : '#e6e6e6', position: 'relative' }} onMouseEnter={() => setHoveredWork(work)} onMouseLeave={() => setHoveredWork(null)} onClick={() => openProject(work)}>
-                          <img src={work.src} alt={work.title} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+          {/* Gallery stays mounted for the whole main view; `active` fades it
+              out/in (canvas + spacer) when switching to list/info. */}
+          {webglOk ? (
+            <WebGLGallery
+              active={mode === "overview" && !infoOpen}
+              pool={pool}
+              getScroll={getScroll}
+              isDark={isDark}
+              onHover={setHoveredWP}
+              onSeq={(n) => footerOdomRef.current?.to(n)}
+              onPick={openProject}
+            />
+          ) : (
+            /* DOM masonry fallback (no WebGL / reduced motion) */
+            <Transition
+              show={mode === "overview" && !infoOpen}
+              enter={masonryEnter}
+              exit={masonryExit}
+            >
+              <section
+                style={{
+                  paddingTop: 80,
+                  paddingBottom: 260,
+                  paddingLeft: 40,
+                  paddingRight: 40,
+                }}
+                onMouseLeave={() => setHoveredWP(null)}
+              >
+                <div
+                  style={{ display: "flex", gap: 28, alignItems: "flex-start" }}
+                >
+                  {fallbackCols.map((colWps, ci) => (
+                    <div
+                      key={ci}
+                      style={{
+                        flex: 1,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 28,
+                        marginTop: COL_OFFSETS[ci],
+                      }}
+                    >
+                      {colWps.map((wp) => (
+                        <div
+                          data-cursor
+                          className="masonry-card"
+                          key={`${wp.series.slug}-${wp.index}`}
+                          style={{
+                            aspectRatio: `${wp.photo.w} / ${wp.photo.h}`,
+                            overflow: "hidden",
+                            cursor: "pointer",
+                            background: "var(--bg-soft)",
+                            position: "relative",
+                          }}
+                          onMouseEnter={() => setHoveredWP(wp)}
+                          onClick={() => openProject(wp)}
+                        >
+                          <img
+                            src={wp.photo.thumb}
+                            alt={`${wp.series.name} ${wp.index + 1}`}
+                            loading="lazy"
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "cover",
+                              display: "block",
+                            }}
+                          />
                         </div>
                       ))}
                     </div>
                   ))}
                 </div>
               </section>
-            ))}
-
-          {mode === 'list' && (
-            <div style={{ position: 'fixed', top: 60, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
-              <div data-lenis-prevent style={{ display: 'flex', gap: 28, padding: '0 40px', overflowX: 'auto', height: '52vh' }}>
-                {WORKS.map((work) => (
-                  <div data-cursor key={work.id} style={{ flexShrink: 0, height: '100%', aspectRatio: '3 / 2', overflow: 'hidden', cursor: 'pointer', background: isDark ? '#141414' : '#e6e6e6', position: 'relative' }} onMouseEnter={() => setHoveredWork(work)} onMouseLeave={() => setHoveredWork(null)} onClick={() => openProject(work)}>
-                    <img src={work.src} alt={work.title} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                    <div style={{ position: 'absolute', bottom: 8, left: 10, ...MONO, fontSize: 9, color: '#FEFEFE' }}>{String(WORKS.findIndex((w) => w.id === work.id) + 1).padStart(2, '0')}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            </Transition>
           )}
 
+          <Transition show={mode === "list"} enter={listEnter} exit={listExit}>
+            <div
+              className="list-stage"
+              style={{
+                position: "fixed",
+                top: 60,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                display: "flex",
+                alignItems: "center",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                data-lenis-prevent
+                style={{
+                  display: "flex",
+                  gap: 28,
+                  padding: "0 40px",
+                  overflowX: "auto",
+                  height: "52vh",
+                }}
+                onMouseLeave={() => setHoveredWP(null)}
+              >
+                {SERIES.map((s) => {
+                  const cover = coverOf(s)
+                  const coverWP: WallPhoto = { series: s, index: 0, photo: cover }
+                  return (
+                    <div
+                      data-cursor
+                      className="list-card"
+                      key={s.slug}
+                      style={{
+                        flexShrink: 0,
+                        height: "100%",
+                        aspectRatio: "3 / 2",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        background: "var(--bg-soft)",
+                        position: "relative",
+                      }}
+                      onMouseEnter={() => setHoveredWP(coverWP)}
+                      onClick={() => openSeries(s)}
+                    >
+                      <img
+                        src={cover.thumb}
+                        alt={s.name}
+                        loading="lazy"
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "cover",
+                          display: "block",
+                        }}
+                      />
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: 8,
+                          left: 10,
+                          ...MONO,
+                          fontSize: 9,
+                          color: "#FEFEFE",
+                        }}
+                      >
+                        {String(seriesNumber(s)).padStart(2, "0")}
+                      </div>
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: 8,
+                          right: 10,
+                          ...MONO,
+                          fontSize: 9,
+                          color: "#FEFEFE",
+                        }}
+                      >
+                        {s.name}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </Transition>
+
           {/* ── Footer ───────────────────────────────────────────────── */}
-          <footer style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 400, padding: '0 20px 18px' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-              <span style={{ ...MONO, fontSize: 12, color: fg, opacity: 0.38, paddingBottom: 6 }}>©2026</span>
-              <span style={{ ...MONO, fontSize: 12, color: fg, opacity: 0.38, paddingBottom: 6, display: 'inline-flex', alignItems: 'flex-end' }}>
-                [<Odometer ref={footerOdomRef} digits={2} digitStyle={{ ...MONO, fontSize: 12, color: fg, opacity: 1 }} />]
+          <footer
+            style={{
+              position: "fixed",
+              bottom: 0,
+              left: 0,
+              right: 0,
+              zIndex: 400,
+              padding: "0 20px 18px",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-end",
+                justifyContent: "space-between",
+                position: "relative",
+                minHeight: 64,
+              }}
+            >
+              <span
+                style={{
+                  ...MONO,
+                  fontSize: 12,
+                  color: fg,
+                  opacity: 0.38,
+                  paddingBottom: 6,
+                }}
+              >
+                ©2026
+              </span>
+              <FilterWords cat={route.cat} fg={fg} onPick={pickCat} />
+              <span
+                style={{
+                  ...MONO,
+                  fontSize: 12,
+                  color: fg,
+                  opacity: 0.38,
+                  paddingBottom: 6,
+                  display: "inline-flex",
+                  alignItems: "flex-end",
+                }}
+              >
+                [
+                <Odometer
+                  ref={footerOdomRef}
+                  digits={2}
+                  digitStyle={{ ...MONO, fontSize: 12, color: fg, opacity: 1 }}
+                />
+                ]
               </span>
             </div>
           </footer>
 
           {/* ── INFO overlay ──────────────────────────────────────────── */}
-          {infoOpen && (
-            <div data-lenis-prevent style={{ position: 'fixed', inset: 0, zIndex: 550, background: isDark ? 'rgba(8,8,8,0.97)' : 'rgba(254,254,254,0.97)', backdropFilter: 'blur(4px)', display: 'flex', flexDirection: 'column', padding: '80px 40px 200px', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 52 }}>
-                <div style={{ ...DISPLAY, fontSize: 'clamp(48px, 6.8vw, 98px)', lineHeight: 0.9, color: fg }}>Info</div>
-                <button onClick={() => nav(mode === 'list' ? '#/list' : '#/')} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: `1px solid ${fg}`, padding: '4px 10px', cursor: 'pointer', marginTop: 10 }}>[CLOSE]</button>
+          <Transition show={infoOpen} enter={infoEnter} exit={infoExit}>
+            <div
+              data-lenis-prevent
+              style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 550,
+                background: isDark
+                  ? "rgba(8,8,8,0.97)"
+                  : "rgba(254,254,254,0.97)",
+                backdropFilter: "blur(4px)",
+                display: "flex",
+                flexDirection: "column",
+                padding: "80px 40px 200px",
+                overflowY: "auto",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  marginBottom: 52,
+                }}
+              >
+                <div
+                  className="info-title"
+                  style={{
+                    ...DISPLAY,
+                    fontSize: "clamp(48px, 6.8vw, 98px)",
+                    lineHeight: 0.9,
+                    color: fg,
+                  }}
+                >
+                  <Chars
+                    text="Info"
+                    charStyle={{
+                      ...DISPLAY,
+                      fontSize: "clamp(48px, 6.8vw, 98px)",
+                      lineHeight: 0.9,
+                      color: fg,
+                    }}
+                  />
+                </div>
+                <button
+                  className="info-block"
+                  onClick={() => {
+                    const base =
+                      route.cat === "all"
+                        ? mode === "list"
+                          ? "#/list"
+                          : "#/"
+                        : mode === "list"
+                          ? `#/${route.cat}/list`
+                          : `#/${route.cat}`
+                    nav(base)
+                  }}
+                  style={{
+                    ...MONO,
+                    fontSize: 11,
+                    color: fg,
+                    background: "none",
+                    border: "1px solid var(--fg)",
+                    padding: "4px 10px",
+                    cursor: "pointer",
+                    marginTop: 10,
+                  }}
+                >
+                  [CLOSE]
+                </button>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 48, maxWidth: 860 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 48,
+                  maxWidth: 860,
+                }}
+              >
                 <div>
-                  <div style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.4, marginBottom: 5 }}>LOCAL TIME</div>
-                  <div style={{ ...DISPLAY, fontSize: 28, color: fg, marginBottom: 36, fontVariantNumeric: 'tabular-nums' }}>{clock}</div>
-                  <div style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.4, marginBottom: 5 }}>CONTACT</div>
-                  <a href="mailto:info@yourmail.com" style={{ ...DISPLAY, fontSize: 20, color: fg, textDecoration: 'none', display: 'block', marginBottom: 36, borderBottom: `1px solid ${fg}`, paddingBottom: 8 }}>INFO@YOURMAIL.COM</a>
-                  <div style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.4, marginBottom: 6 }}>BASED IN</div>
-                  <div style={{ ...MONO, fontSize: 12, color: fg, marginBottom: 36 }}>LONDON, UK</div>
-                  <div style={{ display: 'flex', gap: 24 }}>
-                    {['INSTAGRAM', 'TWITTER', 'LINKEDIN'].map((s) => (<span key={s} data-cursor style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.38, cursor: 'pointer' }}>{s}</span>))}
+                  <div className="info-block" style={{ marginBottom: 36 }}>
+                    <div
+                      style={{
+                        ...MONO,
+                        fontSize: 10,
+                        color: fg,
+                        opacity: 0.4,
+                        marginBottom: 5,
+                      }}
+                    >
+                      LOCAL TIME
+                    </div>
+                    <div
+                      style={{
+                        ...DISPLAY,
+                        fontSize: 28,
+                        color: fg,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {clock}
+                    </div>
+                  </div>
+                  <div className="info-block" style={{ marginBottom: 36 }}>
+                    <div
+                      style={{
+                        ...MONO,
+                        fontSize: 10,
+                        color: fg,
+                        opacity: 0.4,
+                        marginBottom: 5,
+                      }}
+                    >
+                      CONTACT
+                    </div>
+                    <a
+                      href="mailto:1162844453@qq.com"
+                      style={{
+                        ...DISPLAY,
+                        fontSize: 20,
+                        color: fg,
+                        textDecoration: "none",
+                        display: "block",
+                        borderBottom: "1px solid var(--fg)",
+                        paddingBottom: 8,
+                      }}
+                    >
+                      1162844453@QQ.COM
+                    </a>
+                  </div>
+                  <div className="info-block" style={{ marginBottom: 36 }}>
+                    <div
+                      style={{
+                        ...MONO,
+                        fontSize: 10,
+                        color: fg,
+                        opacity: 0.4,
+                        marginBottom: 6,
+                      }}
+                    >
+                      BASED IN
+                    </div>
+                    <div style={{ ...MONO, fontSize: 12, color: fg }}>
+                      SHANGHAI, CHINA
+                    </div>
+                  </div>
+                  <div
+                    className="info-block"
+                    style={{ display: "flex", gap: 24 }}
+                  >
+                    {[
+                      ["GITHUB", "https://github.com/UNborracho"],
+                      ["UNSPLASH", "https://unsplash.com/@_vag4b0nd_"],
+                      ["REDNOTE", "https://xhslink.cn/m/5autIUSsSVM"],
+                    ].map(([label, href]) => (
+                      <a
+                        key={label}
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        data-cursor
+                        style={{
+                          ...MONO,
+                          fontSize: 10,
+                          color: fg,
+                          opacity: 0.38,
+                          textDecoration: "none",
+                        }}
+                      >
+                        {label}
+                      </a>
+                    ))}
                   </div>
                 </div>
-                <div style={{ width: '100%', aspectRatio: '3/4', background: isDark ? '#181818' : '#efefef', overflow: 'hidden' }}>
-                  <img src={`${UB}/photo-1633381521050-26bb467d9d5a?w=600&h=800&fit=crop&auto=format`} alt="Photographer portrait" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', opacity: 0.82 }} />
+                <div
+                  style={{
+                    width: "100%",
+                    aspectRatio: "3/4",
+                    background: "var(--bg-soft)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <img
+                    className="info-portrait"
+                    src={AVATAR?.src ?? ""}
+                    alt="Photographer portrait"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                      display: "block",
+                      opacity: 0.82,
+                      willChange: "transform",
+                    }}
+                  />
                 </div>
               </div>
-              <div style={{ position: 'absolute', bottom: 20, left: 40, display: 'flex', gap: 24 }}>
-                {['PRIVACY POLICY', 'COOKIE POLICY'].map((l) => (<span key={l} style={{ ...MONO, fontSize: 9, color: fg, opacity: 0.28, cursor: 'pointer' }}>{l}</span>))}
+              {/* policy pages pending — re-enable (display:flex) when URLs exist */}
+              <div
+                className="info-policy"
+                style={{
+                  position: "absolute",
+                  bottom: 20,
+                  left: 40,
+                  display: "none",
+                  gap: 24,
+                }}
+              >
+                {["PRIVACY POLICY", "COOKIE POLICY"].map((l) => (
+                  <span
+                    key={l}
+                    style={{
+                      ...MONO,
+                      fontSize: 9,
+                      color: fg,
+                      opacity: 0.28,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {l}
+                  </span>
+                ))}
               </div>
             </div>
-          )}
+          </Transition>
         </>
       )}
 
       {/* ── PROJECT ──────────────────────────────────────────────────── */}
-      {view === 'project' && projectWork && (
+      {view === "project" && projectSeries && (
         <>
-          <NavBar onClose={closeProject} />
-          <div style={{ position: 'fixed', top: 76, left: 20, zIndex: 500 }}>
-            {([['CATEGORY', projectWork.category.toUpperCase()], ['AGENCY', projectWork.agency], ['CLIENT', projectWork.client], ['TYPE', projectWork.type], ['YEAR', String(projectWork.year)]] as [string, string][]).map(([k, v]) => (
-              <div key={k} style={{ display: 'flex', gap: 14, marginBottom: 3 }}>
-                <span style={{ ...MONO, fontSize: 9, color: fg, opacity: 0.38, minWidth: 68 }}>{k}</span>
+          <NavBar
+            isDark={isDark}
+            fg={fg}
+            mode={mode}
+            cat={route.cat}
+            infoOpen={infoOpen}
+            projectSeries={projectSeries}
+            onClose={closeProject}
+            onToggleTheme={toggleTheme}
+          />
+          <div style={{ position: "fixed", top: 76, left: 20, zIndex: 500 }}>
+            {(
+              [
+                ["SERIES", projectSeries.name],
+                ["CATEGORY", projectSeries.category.toUpperCase()],
+                ["YEAR", String(projectSeries.year)],
+                ["PHOTOS", String(projectSeries.photos.length)],
+              ] as [string, string][]
+            ).map(([k, v]) => (
+              <div
+                key={k}
+                style={{ display: "flex", gap: 14, marginBottom: 3 }}
+              >
+                <span
+                  style={{
+                    ...MONO,
+                    fontSize: 9,
+                    color: fg,
+                    opacity: 0.38,
+                    minWidth: 68,
+                  }}
+                >
+                  {k}
+                </span>
                 <span style={{ ...MONO, fontSize: 9, color: fg }}>{v}</span>
               </div>
             ))}
           </div>
           <div ref={projectRef}>
-            {projectImages.map((img) => (
-              <div key={img.id} style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', background: bg }}>
-                <img className="project-img" src={img.src} alt={img.title} style={{ maxWidth: '85vw', maxHeight: '82vh', objectFit: 'contain', display: 'block', background: isDark ? '#111' : '#efefef' }} />
-                <div style={{ position: 'absolute', bottom: 24, left: 24, ...MONO, fontSize: 9, color: fg, opacity: 0.38 }}>{img.title} — {img.year}</div>
+            {projectImages.map((photo, i) => (
+              <div
+                key={photo.full}
+                style={{
+                  height: "100vh",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                  background: bg,
+                }}
+              >
+                <img
+                  className="project-img"
+                  src={photo.full}
+                  alt={`${projectSeries.name} ${i + 1}`}
+                  loading="lazy"
+                  style={{
+                    maxWidth: "85vw",
+                    maxHeight: "82vh",
+                    objectFit: "contain",
+                    display: "block",
+                    background: "var(--bg-soft)",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: 24,
+                    left: 24,
+                    ...MONO,
+                    fontSize: 9,
+                    color: fg,
+                    opacity: 0.38,
+                  }}
+                >
+                  {projectSeries.name} — {projectSeries.year} · {i + 1} /{" "}
+                  {projectImages.length}
+                </div>
               </div>
             ))}
           </div>
-          <div style={{ position: 'fixed', right: 20, top: '50%', transform: 'translateY(-50%)', display: 'flex', flexDirection: 'column', gap: 7, zIndex: 700 }}>
+          <div
+            style={{
+              position: "fixed",
+              right: 20,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 7,
+              zIndex: 700,
+            }}
+          >
             {projectImages.map((_, i) => (
-              <button key={i} onClick={() => goToProjectImage(i)} style={{ width: i === projectIndex ? 20 : 10, height: 1, background: fg, border: 'none', padding: 0, cursor: 'pointer', opacity: i === projectIndex ? 1 : 0.22, transition: 'width 0.22s ease, opacity 0.22s ease', display: 'block' }} />
+              <button
+                key={i}
+                onClick={() => goToProjectImage(i)}
+                style={{
+                  width: i === projectIndex ? 20 : 10,
+                  height: 1,
+                  background: fg,
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  opacity: i === projectIndex ? 1 : 0.22,
+                  transition: "width 0.22s ease, opacity 0.22s ease",
+                  display: "block",
+                }}
+              />
             ))}
           </div>
-          <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 700, ...DISPLAY, fontSize: 'clamp(48px, 6vw, 90px)', lineHeight: 1, color: fg, fontVariantNumeric: 'tabular-nums' }}>
-            <Odometer ref={projectOdomRef} digits={3} digitStyle={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 'clamp(48px, 6vw, 90px)', lineHeight: 1, color: fg }} />
+          <div
+            style={{
+              position: "fixed",
+              bottom: 24,
+              right: 24,
+              zIndex: 700,
+              ...DISPLAY,
+              fontSize: "clamp(48px, 6vw, 90px)",
+              lineHeight: 1,
+              color: fg,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            <Odometer
+              ref={projectOdomRef}
+              digits={3}
+              digitStyle={{
+                fontFamily: "'Space Grotesk', sans-serif",
+                fontWeight: 700,
+                fontSize: "clamp(48px, 6vw, 90px)",
+                lineHeight: 1,
+                color: fg,
+              }}
+            />
           </div>
         </>
       )}

@@ -11,3 +11,15 @@ logs/
 *.log
 .claude-replay.*
 .tmp-*
+
+# photo originals (1.1GB) — webp derivatives in public/photos/ ARE tracked
+photo/
+
+# macOS
+.DS_Store
+
+# figma make internals — only make/site.json stays tracked (vite.config imports it)
+.figma/*
+!.figma/make/
+.figma/make/*
+!.figma/make/site.json

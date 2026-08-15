@@ -1,7 +1,11 @@
 {
-  "description": "This web application offers users a guided experience to create content based on prompts, enhancing creativity and productivity for writers and creators.",
+  "description": "Spike's portfolio — street, scenery and live photography.",
+  "title": "Spike Hu — Photography",
+  "icons": {
+    "icon": "/favicon.svg"
+  },
   "robots": {
-    "index": false
+    "index": true
   },
   "accessibility": {
     "addBypassLinks": false,

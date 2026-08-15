@@ -2,6 +2,58 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&display=swap');
 @import 'tailwindcss';
 
+/* ── Theme colors as registered custom properties ────────────────────
+   The toggle is animated by the View Transitions API (see toggleTheme in
+   App.tsx): old/new snapshots cross-fade on the GPU compositor — smooth
+   even while the page keeps repainting (WebGL render loop). @property
+   keeps --bg/--fg typed; they are NOT transitioned per-frame (that forced
+   a full-document restyle+repaint every frame — the janky feel).
+   Fallback: browsers without the API snap instantly (no worse than the
+   original behavior). */
+@property --bg {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #fefefe;
+}
+@property --fg {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #080808;
+}
+
+:root {
+  --bg: #fefefe;
+  --fg: #080808;
+  --bg-soft: color-mix(in srgb, var(--fg) 8%, var(--bg)); /* card fills */
+}
+:root[data-theme='dark'] {
+  --bg: #080808;
+  --fg: #fefefe;
+}
+
+/* ── View Transition: theme cross-fade ──────────────────────────────
+   ::view-transition-old/new are the browser's own snapshot layers,
+   compositor-driven, so the fade costs nothing on the main thread.
+   0.4s power2.inOut ≈ cubic-bezier(.45,0,.55,1). Reduced motion: none. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.4s;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+}
+::view-transition-old(root) {
+  animation-name: -ua-view-transition-fade-out;
+}
+::view-transition-new(root) {
+  animation-name: -ua-view-transition-fade-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}
+
 /* ── Lenis smooth-scroll (recommended CSS) ───────────────────────────── */
 html.lenis,
 html.lenis body {
