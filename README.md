@@ -1,57 +1,59 @@
-# Photography Folio — Infinite WebGL Gallery
+# SPIKE HU — Photography Folio
 
-An infinite, scroll-driven photography portfolio gallery. The works grid is rendered on a `<canvas>` as a Three.js plane mesh bent along a gentle cylinder, scrolling forever via a seamless modulo loop, with scroll-velocity-driven parallax. Smooth scrolling is handled by Lenis, motion by GSAP/ScrollTrigger.
+An infinite, scroll-driven photography portfolio. The gallery wall is a Three.js plane conveyor bent along a gentle cylinder — scrolling forever, every wrapped plane carrying the next photo from a shuffled lap sequence. Lenis drives the smooth scroll, GSAP/ScrollTrigger the motion. All imagery is the photographer's own work, piped from camera originals to optimized WebP by one command.
+
+![wall](docs/02-wall.png)
+
+## Views
+
+| Route | View |
+|---|---|
+| `#/` | **Overview** — the infinite WebGL wall, all 64 photos |
+| `#/street` `#/scenery` `#/live` | Wall filtered by category (footer giant words) |
+| `#/list` | Series covers strip |
+| `#/p/beijing` `#/p/david-tao/9` | **Project** — a full series; deep-link straight to photo *n* |
+| `… + /info` | INFO overlay (local time, contact, socials, portrait) |
+
+![preloader](docs/01-preloader.png)
+![project](docs/03-project.png)
+![info](docs/04-info.png)
+
+## Features
+
+- **Conveyor gallery** (Three.js) — 36 planes on a 4-column curved layout; planes scrolling off the top re-enter from the bottom bound to the next photo of a deterministically shuffled lap. One lap = every photo in the pool, no repeats; the next lap reshuffles. Column pitch sizes to the pool's tallest photo (true aspect ratios — no distortion, no overlap), with per-row z-jitter so same-column planes can never z-fight.
+- **Real-progress preloader** — the counter/bar can never outrun actual bytes: progress is clamped to the first-lap thumbs loading (same shuffled list the wall binds, zero double-fetching). The masked-char intro choreography runs alongside; the gate opens when both finish.
+- **Scroll-velocity motion** — per-plane rotation tilt + per-row parallax driven by the smoothed Lenis delta, `power2.inOut` easing throughout. Sub-pixel scroll (`lenis.animatedScroll`) feeds the render loop — no steppy motion.
+- **Raycast interaction** — hover a plane: spotlight dim + floating series card (number, category, year, photo count, frame index). The card persists across plane seams, survives its own fade-out, and click opens the series deep-linked to that exact photo.
+- **Rolling-digit odometers** — footer lap counter and project photo counter animate as rolling digit columns.
+- **View transitions** — a mount-through-exit `<Transition>` keeps the WebGL gallery alive across mode switches; every transition follows the reference rhythm: exit fade → deliberate blank beat → cascade-in.
+- **Custom blurred-dot cursor** (`mix-blend-mode: difference`), light/dark theme via CSS custom properties flipped inside `document.startViewTransition` (GPU cross-fade), full-screen film grain, live local-time clock.
+- **Graceful fallback** — DOM masonry when WebGL is unavailable or `prefers-reduced-motion` is set.
 
 ## Photos: content pipeline
 
-All imagery comes from your own originals in `photo/` (git-ignored, ~1.1GB):
+Originals live in `photo/` (git-ignored, ~1.1GB) — one folder per series, plus `avatar/`:
 
 ```
 photo/
-  BEIJING/  SHANGHAI/  SICHUAN/  YUNNAN/  DT/   # one folder = one series
-  avatar/                                        # INFO-page portrait
+  BEIJING/  SHANGHAI/  SICHUAN/  YUNNAN/  DT/
+  avatar/                                  # INFO-page portrait
 ```
 
 ```bash
 pnpm photos   # photo/ → public/photos/ (webp) + regenerate src/photo-manifest.ts
 ```
 
-- **thumb**: 720px long edge · webp q75 → gallery wall / WebGL textures
-- **full**: 1920px long edge · webp q78 (q85 for the `DT` live series — dark-stage gradients) → project pages
-- EXIF orientation auto-corrected, output names hashed (immutable caching), stale outputs pruned, series order by shutter number.
+- **thumb** — 720px long edge · webp q75 → gallery wall / WebGL textures (~58KB avg)
+- **full** — 1920px long edge · webp q78 (q85 for the `DT` live series — dark-stage gradients) → project pages
+- EXIF orientation corrected, output names content-hashed (immutable caching), stale outputs pruned, series order = shutter number
 
-**Adding photos later**: drop files into `photo/<SERIES>/` → `pnpm photos` → commit the new `public/photos/` files + `src/photo-manifest.ts`. Nothing else to touch — the wall, routes, footer words and project pages all read the manifest.
+**Adding photos later**: drop files into `photo/<SERIES>/` → `pnpm photos` → commit `public/photos/` + `src/photo-manifest.ts`. Nothing else to touch — wall, routes, footer words and project pages all read the manifest.
 
-**New series / category**: add a folder + an entry in `SERIES` at the top of `scripts/photos.mjs`, then `pnpm photos`. Series slugs must not collide with the reserved route words `p / list / index / info` (the script enforces this).
-
-## Routes (hash router)
-
-```
-#/                      all series · overview wall
-#/street #/scenery #/live   category filter · overview
-#/list, #/<cat>/list    series covers strip
-#/p/<series>            project view · photo 1
-#/p/<series>/<n>        project view · deep link to photo n
-(+ /info on any route)  INFO overlay
-```
-
-## Features
-
-- **WebGL infinite gallery** (Three.js) — 36 planes on a 4-column masonry mapped onto a curved surface; planes recycle by `scroll % cycleHeight` so the grid loops seamlessly and never ends.
-- **Scroll-velocity motion** — per-plane rotation tilt + per-row parallax driven by the (smoothed) Lenis scroll delta, `power2.inOut` easing throughout (no linear).
-- **Lenis + GSAP/ScrollTrigger** — Lenis is driven by the GSAP ticker; sub-pixel scroll (`lenis.animatedScroll`) feeds the render loop for non-steppy motion.
-- **Raycast interaction** — hover a plane for a spotlight + floating info card; click to open the project. While the cursor is on the canvas the card is persistent: seam crossings between planes keep the current work; only leaving the canvas (or opening a project) hides it. Switching works uses frame-hysteresis. The info card stays mounted through its fade-out (content swaps in place, never remounts).
-- **Rolling-digit odometers** — footer index counter and project counter animate as rolling digit columns (`gsap.to(numObj, { val, ease })`).
-- **Split-text intro** — characters animate from `{ yPercent: 100, rotate: 7 }` with a `0.03` stagger while a `0 → 100%` counter tweens in.
-- **Project view** — full-screen, per-image scroll with `ScrollTrigger` fade/scale and a scrubbed odometer.
-- **View transitions (reference rhythm)** — a tiny `<Transition>` component keeps views mounted through their exit animations. The WebGL gallery stays mounted for the whole main view and fades in/out via an `active` prop (canvas opacity + scroll spacer height). Every switch follows the reference site's three-phase rhythm: the outgoing view fades, a deliberate **blank beat** where only nav/footer chrome remains, then the incoming view cascades in — list cards rise with a stagger, the info title chars slide out of a mask (`yPercent 110 / rotate 4`), blocks stagger, the portrait settles from `scale 1.5`. Timings are inline in the enter/exit choreography functions in `src/App.tsx` (list pause 0.3s, info pause 0.7s).
-- **Custom blurred-dot cursor** — `mix-blend-mode: difference`, morphs to a ring over interactive elements; mouse-only (touch keeps the native cursor).
-- **Light / dark theme**, full-screen grain overlay, live local-time clock. Theme colors are registered CSS custom properties (`@property --bg/--fg`); the toggle runs inside `document.startViewTransition`, so the browser cross-fades old/new snapshots on the **GPU compositor** — one style recalc on the main thread, zero per-frame repaint (previously the interpolated `--bg` forced a full-document restyle every frame → jank). `main.tsx` sets `data-theme` before mount so there's no first-paint flash. Browsers without the API snap instantly.
-- **Graceful fallback** — reverts to a DOM masonry when WebGL is unavailable or `prefers-reduced-motion` is set.
+**New series / category**: add a folder + an entry in `SERIES` at the top of `scripts/photos.mjs`, rerun. Series slugs must not collide with the reserved route words `p / list / index / info` (the script enforces this).
 
 ## Stack
 
-React 19 · Vite 8 · Tailwind CSS v4 · TypeScript · Lenis · GSAP + ScrollTrigger · Three.js
+React 19 · Vite 8 · TypeScript · Tailwind CSS v4 · Three.js · GSAP + ScrollTrigger · Lenis · sharp (pipeline)
 
 ## Getting started
 
@@ -60,26 +62,32 @@ pnpm install
 pnpm dev      # http://localhost:8443 (respects $PORT)
 pnpm build    # production build → dist/
 pnpm preview  # preview the build
+pnpm photos   # regenerate web derivatives + manifest from photo/
 ```
 
-Requires Node 22 / pnpm 10 (see `.mise.toml`).
+Requires Node ≥ 22.12 / pnpm (see `.mise.toml`, `engines` field).
 
 ## Project structure
 
 ```
 src/
-  App.tsx           # views: preloader / main / project, Lenis+GSAP wiring, chrome, view-transition choreography
-  WebGLGallery.tsx  # Three.js conveyor: layout, bend, modulo loop, wrap-rebind, raycast, odometer, active fade
+  App.tsx           # views: preloader / main / project, Lenis+GSAP wiring, chrome, transitions
+  WebGLGallery.tsx  # Three.js conveyor: layout, bend, wrap-rebind, raycast, odometer
   Cursor.tsx        # blurred-dot custom cursor
   Transition.tsx    # mount-through-exit transition wrapper (gsap enter/exit)
-  router.ts         # hash router (categories, series deep links)
-  shared.ts         # wall model derived from the manifest (avoids App↔Gallery circular import)
+  router.ts         # hash router (category filters, series deep links)
+  shared.ts         # wall model derived from the manifest
   photo-manifest.ts # AUTO-GENERATED by scripts/photos.mjs — do not edit
-  index.css         # Tailwind v4 + Lenis + cursor styles
+  index.css         # Tailwind v4 + Lenis + cursor + theme tokens
   main.tsx          # entry
-scripts/photos.mjs   # photo pipeline (sharp)
+scripts/photos.mjs  # photo pipeline (sharp)
+docs/               # screenshots
 ```
 
 ## Tunables
 
-Key knobs live at the top of `src/WebGLGallery.tsx`: `CURVE` (bend depth), `VEL_TILT` / `MAX_TILT` (velocity tilt), `ROW_VEL` (per-row parallax), `NUM_CYCLES` (loop length), `HOVER_HOLD` (hover hysteresis frames). Row spacing is `colW * 1.45`, computed inside `computeLayout`.
+Key knobs live at the top of `src/WebGLGallery.tsx`: `CURVE` (bend depth), `VEL_TILT` / `MAX_TILT` (velocity tilt), `ROW_VEL` (per-row parallax), `NUM_CYCLES` (scroll length), `HOVER_HOLD` (hover hysteresis frames), and the `× 1.12` breathing factor inside `computeLayout` (column spacing vs tallest photo).
+
+## Deploying
+
+Push to `main` → Vercel builds (`vite build` → `dist/`) → custom domain. Hash routing keeps every deep link (`#/p/david-tao/9`) working on any static host with zero server config.
