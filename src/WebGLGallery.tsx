@@ -33,6 +33,8 @@ interface Props {
   onHover: (w: WallPhoto | null) => void
   /** position inside the current lap (1-based) → footer odometer */
   onSeq: (n: number) => void
+  /** fired when a cross-dissolve finished its fade-out — App resets scroll */
+  onResetScroll?: () => void
   onPick: (w: WallPhoto) => void
 }
 
@@ -73,6 +75,7 @@ export default function WebGLGallery({
   isDark,
   onHover,
   onSeq,
+  onResetScroll,
   onPick,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -86,11 +89,13 @@ export default function WebGLGallery({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const getScrollRef = useRef(getScroll)
   getScrollRef.current = getScroll
-  const setPoolRef = useRef<((p: WallPhoto[]) => void) | null>(null)
+  const setPoolRef = useRef<
+    ((p: WallPhoto[], dissolve?: boolean) => void) | null
+  >(null)
 
   // stable callback refs (so the mount effect never re-runs)
-  const cbRef = useRef({ onHover, onSeq, onPick })
-  cbRef.current = { onHover, onSeq, onPick }
+  const cbRef = useRef({ onHover, onSeq, onPick, onResetScroll })
+  cbRef.current = { onHover, onSeq, onPick, onResetScroll }
 
   const hoveredKeyRef = useRef<string | null>(null)
   const lastScrollRef = useRef(0)
@@ -181,6 +186,7 @@ export default function WebGLGallery({
     let lastLap = 0
     let suppressWrap = 0 // frames to ignore wrap jumps (pool/scroll resets)
     let lastNcols = ncolsFor(window.innerWidth)
+    let prevPoolLen = 0 // >0 after the first seed → enables staggered fade-in
     const planes: THREE.Mesh[] = []
     for (let i = 0; i < SLOT_COUNT; i++) {
       const mat = new THREE.MeshBasicMaterial({
@@ -267,7 +273,26 @@ export default function WebGLGallery({
     // Opaque in steady state (transparent only during the load fade-in).
     // Opaque + depthWrite gives deterministic occlusion → no transparent
     // sort flicker, even if planes momentarily overlap.
-    const bindPlane = (mesh: THREE.Mesh, wp: WallPhoto) => {
+    // ── category cross-dissolve state machine ─────────────────────
+    // seedPool can run in two modes: instant (first mount / column
+    // breakpoint re-seed — no animation, matches previous behavior) or
+    // dissolved (category switch: old planes fade out in place, new pool
+    // fades back in with a per-plane stagger).
+    let transitioning = 0 // planes with an active fade tween
+    let transitionTimer = 0
+    let crossFading = false
+    const killTransition = () => {
+      if (transitionTimer) window.clearTimeout(transitionTimer)
+      transitionTimer = 0
+      crossFading = false
+    }
+
+    const bindPlane = (
+      mesh: THREE.Mesh,
+      wp: WallPhoto,
+      fadingIn = false,
+      stagger = 0,
+    ) => {
       const tex = texCache.get(wp.photo.thumb)
       if (!tex) {
         mesh.userData.want = wp // try again when the texture arrives
@@ -289,17 +314,21 @@ export default function WebGLGallery({
           ? 0x888888
           : 0xffffff,
       )
-      if (firstLoad) {
-        // only the very first fill fades in; wrap rebinds happen at the
-        // screen seam (invisible) — tweening there just churns the render
-        // list (transparent ↔ opaque) and hitches mid-scroll
+      if (firstLoad || fadingIn) {
+        // fade in on first fill and on category cross-dissolve; wrap
+        // rebinds happen at the invisible screen seam — no tween there
+        // (churning the render list mid-scroll hitches)
         mat.transparent = true
+        mat.opacity = firstLoad ? 0 : mat.opacity
+        gsap.killTweensOf(mat)
         gsap.to(mat, {
           opacity: 1,
-          duration: 0.6,
+          duration: 0.45,
           ease: "power2.inOut",
+          delay: stagger,
           onComplete: () => {
             mat.transparent = false
+            transitioning--
           },
         })
       } else {
@@ -324,28 +353,69 @@ export default function WebGLGallery({
     }
 
     // (re)bind every active slot from the lap-0 sequence
-    const seedPool = () => {
+    const seedPool = (dissolve = false) => {
+      killTransition()
+      if (dissolve) {
+        // Phase 1: fade current planes out in place (0.25s). Wrap rebinds
+        // are suppressed while crossFading so half-faded planes can't be
+        // swapped mid-dissolve. Scroll reset waits for the fade — jumping
+        // to top mid-dissolve would visibly tear the wall.
+        crossFading = true
+        for (const m of planes) {
+          if (!m.visible) continue
+          const mat = m.material as THREE.MeshBasicMaterial
+          gsap.killTweensOf(mat)
+          transitioning++
+          mat.transparent = true
+          gsap.to(mat, {
+            opacity: 0,
+            duration: 0.25,
+            ease: "power2.inOut",
+            onComplete: () => transitioning--,
+          })
+        }
+        transitionTimer = window.setTimeout(() => {
+          transitionTimer = 0
+          // Phase 2: swap the pool underneath + staggered fade-in.
+          // Repeated footer taps just restart here — state stays coherent.
+          seedPool(false)
+          crossFading = false
+          cbRef.current.onResetScroll?.()
+        }, 260)
+        return
+      }
       N = Math.max(1, poolArr.length)
       seq = shuffled(poolArr, WALL_SEED) // lap 0 — matches the preloader's list
       nextIdx = layoutRef.current.ncols * ROWS
       lastLap = 0
       suppressWrap = 3 // scroll resets to 0 → ignore the position jump
+      const staggered = !!prevPoolLen // cross-dissolve path (not first seed)
+      prevPoolLen = poolArr.length
       for (let i = 0; i < SLOT_COUNT; i++) {
         const wp = seq[i % N] // small pools repeat within the first screen
-        bindPlane(planes[i], wp)
+        const col = i % layoutRef.current.ncols
+        const row = Math.floor(i / layoutRef.current.ncols)
+        // diagonal wave: top-left lands first, bottom-right last (~0.5s span)
+        const stagger = staggered ? (col + row) * 0.022 : 0
+        bindPlane(planes[i], wp, staggered, stagger)
       }
       prefetch()
       cbRef.current.onSeq(1)
     }
 
-    const setPool = (p: WallPhoto[]) => {
+    const setPool = (p: WallPhoto[], dissolve = false) => {
       poolArr = p
-      seedPool()
       // recompute pitch for the new pool's tallest photo — with a static
       // 1.45× pitch, tall portraits (ar < 0.69) overlap their column
       // neighbor by (height − pitch) px; equal column depths then z-fight
       // in the overlap every frame (the "sticky flicker" bug).
-      applyLayout(window.innerWidth, window.innerHeight)
+      if (dissolve) {
+        seedPool(true)
+        applyLayout(window.innerWidth, window.innerHeight)
+      } else {
+        seedPool()
+        applyLayout(window.innerWidth, window.innerHeight)
+      }
     }
 
     setPoolRef.current = setPool
@@ -483,6 +553,7 @@ export default function WebGLGallery({
         const lastY = mesh.userData.lastY as number
         if (
           activeRef.current &&
+          !crossFading && // no wrap swaps mid-dissolve (would tear the fade)
           suppressWrap === 0 &&
           y - lastY > L.cycleH * 0.5
         ) {
@@ -520,9 +591,9 @@ export default function WebGLGallery({
       }
 
       // render only when something actually changed: still wall = zero GPU
-      // work (previously every idle frame re-rendered the full DPR2 scene)
+      // work; fades (cross-dissolve / first load) always need frames
       const settling = Math.abs(vel) > 0.05
-      if (dirty || settling || firstFrames > 0 || recentlyScrolled) {
+      if (dirty || settling || firstFrames > 0 || recentlyScrolled || transitioning > 0) {
         firstFrames--
         renderer.render(scene, camera)
       }
@@ -576,6 +647,7 @@ export default function WebGLGallery({
       canvas.removeEventListener("pointermove", onMove)
       canvas.removeEventListener("pointerleave", onLeave)
       canvas.removeEventListener("click", onClick)
+      if (transitionTimer) window.clearTimeout(transitionTimer)
       planes.forEach((m) => {
         gsap.killTweensOf(m.material as THREE.MeshBasicMaterial)
         ;(m.material as THREE.MeshBasicMaterial).dispose()
@@ -588,9 +660,12 @@ export default function WebGLGallery({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // pool / category switch → re-seed the conveyor in place
+  // pool / category switch → re-seed the conveyor in place.
+  // Mount uses instant seed; subsequent pool changes cross-dissolve.
+  const mountedRef = useRef(false)
   useEffect(() => {
-    setPoolRef.current?.(pool)
+    setPoolRef.current?.(pool, !mountedRef.current)
+    mountedRef.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pool])
 

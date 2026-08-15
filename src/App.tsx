@@ -835,14 +835,16 @@ export default function App() {
     else lenis.start()
   }, [infoOpen])
 
-  // Reset scroll + odometer whenever the (WebGL) overview is entered, or
-  // the category filter switches (conveyor re-seeds → start from the top)
+  // Reset scroll + odometer whenever the (WebGL) overview is entered.
+  // (Category switches no longer jump here — the wall cross-dissolves and
+  // calls onResetScroll at the fade-out beat instead, so the top-jump
+  // happens while the canvas is blank rather than mid-dissolve.)
   useEffect(() => {
     if (view === "main" && mode === "overview") {
       lenisRef.current?.scrollTo(0, { immediate: true })
       footerOdomRef.current?.to(1)
     }
-  }, [view, mode, route.cat])
+  }, [view, mode])
 
   // remember the last main mode so closing a project returns to it
   useEffect(() => {
@@ -1221,6 +1223,10 @@ export default function App() {
               isDark={isDark}
               onHover={setHoveredWP}
               onSeq={(n) => footerOdomRef.current?.to(n)}
+              onResetScroll={() => {
+                lenisRef.current?.scrollTo(0, { immediate: true })
+                footerOdomRef.current?.to(1)
+              }}
               onPick={openProject}
             />
           ) : (
