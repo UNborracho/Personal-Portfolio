@@ -885,7 +885,12 @@ export default function App() {
 
     // first lap of the wall — the exact photos the gallery binds first
     // (same seed as WebGLGallery lap 0 → zero double-loading)
-    const firstLap = shuffled(WALL, WALL_SEED).slice(0, 36)
+    // preload only what THIS device's wall shows first (2-col phones: 18,
+    // 3-col tablets: 27, desktop: 36). Waiting for all 36 on a phone stalled
+    // the counter at ~50% for seconds on cellular/WeChat webview.
+    const vw0 = window.innerWidth
+    const preloadN = vw0 < 640 ? 20 : vw0 < 1140 ? 28 : 36
+    const firstLap = shuffled(WALL, WALL_SEED).slice(0, preloadN)
     const loadState = { loaded: 0 }
     firstLap.forEach((wp) => {
       const img = new Image()
@@ -1127,7 +1132,7 @@ export default function App() {
                   text="SPIKE HU /"
                   charStyle={{
                     ...DISPLAY,
-                    fontSize: "clamp(44px, 6.8vw, 98px)",
+                    fontSize: "clamp(36px, 6.8vw, 98px)",
                     lineHeight: 0.9,
                     color: fg,
                   }}
@@ -1138,7 +1143,7 @@ export default function App() {
               ref={counterRef}
               style={{
                 ...DISPLAY,
-                fontSize: "clamp(56px, 6.6vw, 95px)",
+                fontSize: "clamp(40px, 6.6vw, 95px)",
                 lineHeight: 1,
                 color: fg,
                 fontVariantNumeric: "tabular-nums",

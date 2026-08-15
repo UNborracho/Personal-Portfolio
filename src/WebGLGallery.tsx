@@ -120,11 +120,10 @@ export default function WebGLGallery({
       alpha: false,
       powerPreference: "high-performance",
     })
-    // mobile: cap DPR at 1.5 — saves ~44% pixels vs 2 at near-zero visual
-    // cost for photos (desktop keeps 2)
-    renderer.setPixelRatio(
-      Math.min(window.devicePixelRatio, isCoarse ? 1.5 : 2),
-    )
+    // Photos ARE the content — never upscale the canvas. DPR 1.5 looked
+    // visibly soft on 3× phones (the compositor stretched it 2×). Cost is
+    // bounded elsewhere (no MSAA, upload scheduling, LRU).
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isCoarse ? 3 : 2))
     renderer.setSize(vw, vh)
     renderer.setClearColor(isDark ? 0x080808 : 0xfefefe, 1)
 
@@ -152,26 +151,23 @@ export default function WebGLGallery({
     const MAX_TEX = isCoarse ? 40 : 64
     const texAge = new Map<string, number>()
     let texClock = 0
-    const idle: (cb: () => void) => void =
-      typeof requestIdleCallback === "function"
-        ? (cb) => requestIdleCallback(cb, { timeout: 500 })
-        : (cb) => setTimeout(cb, 0)
+    // GPU upload scheduler — drains INSIDE the render loop, throttled by
+    // scroll activity. (The previous idle-callback approach fell back to
+    // setTimeout(0) in WeChat/iOS webviews without requestIdleCallback,
+    // firing 3MB uploads mid-scroll — that was the mobile jank.)
     const uploadQueue: THREE.Texture[] = []
-    let uploadScheduled = false
-    const drainUploads = () => {
-      uploadScheduled = false
-      if (disposedRef.current || uploadQueue.length === 0) return
-      // force the GPU upload NOW (idle) instead of on first draw mid-scroll
-      renderer.initTexture(uploadQueue.shift()!)
-      uploadScheduled = true
-      idle(drainUploads)
-    }
+    let lastScrollActivity = performance.now()
     const queueUpload = (tex: THREE.Texture) => {
-      if (disposedRef.current) return
+      if (disposedRef.current || uploadQueue.includes(tex)) return
       uploadQueue.push(tex)
-      if (!uploadScheduled) {
-        uploadScheduled = true
-        idle(drainUploads)
+    }
+    const drainUploads = (scrolling: boolean) => {
+      if (disposedRef.current || !uploadQueue.length) return
+      // during scroll: at most 1 upload per frame (prefetch keeps the queue
+      // near-empty in steady state); when idle: 2/frame to catch up fast
+      const n = scrolling ? 1 : 2
+      for (let i = 0; i < n && uploadQueue.length; i++) {
+        renderer.initTexture(uploadQueue.shift()!)
       }
     }
 
@@ -457,6 +453,12 @@ export default function WebGLGallery({
       velRef.current += (inst - velRef.current) * 0.1
       const vel = velRef.current
       if (suppressWrap > 0) suppressWrap--
+      const scrolling = Math.abs(inst) > 0.5 || Math.abs(vel) > 0.3
+      if (scrolling) lastScrollActivity = performance.now()
+      const recentlyScrolled =
+        performance.now() - lastScrollActivity < 250 || firstFrames > 0
+      // GPU uploads: throttled to 1/frame while scrolling, 2/frame at rest
+      drainUploads(recentlyScrolled)
 
       for (const mesh of planes) {
         const i = mesh.userData.slot as number
@@ -518,7 +520,7 @@ export default function WebGLGallery({
       // render only when something actually changed: still wall = zero GPU
       // work (previously every idle frame re-rendered the full DPR2 scene)
       const settling = Math.abs(vel) > 0.05
-      if (dirty || settling || firstFrames > 0) {
+      if (dirty || settling || firstFrames > 0 || recentlyScrolled) {
         firstFrames--
         renderer.render(scene, camera)
       }
