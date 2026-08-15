@@ -222,6 +222,11 @@ export default function WebGLGallery({
       nextIdx = SLOT_COUNT
       lastLap = 0
       suppressWrap = 3 // scroll resets to 0 → ignore the position jump
+      // recompute pitch for the new pool's tallest photo — with a static
+      // 1.45× pitch, tall portraits (ar < 0.69) overlap their column
+      // neighbor by (height − pitch) px; equal column depths then z-fight
+      // in the overlap every frame (the "sticky flicker" bug).
+      applyLayout(window.innerWidth, window.innerHeight)
       for (let i = 0; i < SLOT_COUNT; i++) {
         const wp = seq[i % N] // small pools repeat within the first screen
         bindPlane(planes[i], wp)
@@ -301,6 +306,14 @@ export default function WebGLGallery({
     const wrapY = (y: number, half: number, ch: number) =>
       ((((y + half) % ch) + ch) % ch) - half
 
+    // per-row z jitter: even if two planes in a column ever overlap (a
+    // pool with extreme aspects), they never share an exact depth →
+    // stable occlusion instead of per-frame z-fighting stripes.
+    const ROW_Z_JITTER = Array.from(
+      { length: ROWS },
+      (_, r) => ((r % 2 === 0 ? 1 : -1) * (0.2 + (r % 3) * 0.15)),
+    )
+
     let raf = 0
     const tick = () => {
       raf = requestAnimationFrame(tick)
@@ -344,7 +357,11 @@ export default function WebGLGallery({
         }
         mesh.userData.lastY = y
 
-        mesh.position.set(L.cols[col].x, y, L.cols[col].depth)
+        mesh.position.set(
+          L.cols[col].x,
+          y,
+          L.cols[col].depth + ROW_Z_JITTER[row],
+        )
         mesh.scale.set(L.colW, L.colW / (mesh.userData.ar as number), 1)
         mesh.rotation.x = Math.max(
           -MAX_TILT,
