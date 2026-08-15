@@ -367,6 +367,12 @@ function NavBar({
   onClose?: () => void
   onToggleTheme: () => void
 }) {
+  // blur only on fine pointers: on phones the compositor re-blurs the nav
+  // every frame over the animating canvas — one of the biggest mobile costs.
+  // Coarse pointers get a flat near-opaque bar (same look at rest).
+  const blurNav =
+    typeof window !== "undefined" &&
+    window.matchMedia("(pointer: fine)").matches
   return (
     <header
       style={{
@@ -381,9 +387,11 @@ function NavBar({
         padding: "0 20px",
         height: 60,
         gap: 20,
-        background: "color-mix(in srgb, var(--bg) 88%, transparent)",
-        backdropFilter: "blur(14px)",
-        WebkitBackdropFilter: "blur(14px)",
+        background: blurNav
+          ? "color-mix(in srgb, var(--bg) 88%, transparent)"
+          : "var(--bg)",
+        backdropFilter: blurNav ? "blur(14px)" : undefined,
+        WebkitBackdropFilter: blurNav ? "blur(14px)" : undefined,
         borderBottom: "1px solid color-mix(in srgb, var(--fg) 8%, transparent)",
       }}
     >

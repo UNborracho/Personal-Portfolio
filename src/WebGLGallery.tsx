@@ -103,14 +103,28 @@ export default function WebGLGallery({
     disposedRef.current = false
 
     const vw = window.innerWidth
+    // touch detection lives up here — renderer/DPR and the texture cache
+    // both branch on it (declared later would be a TDZ error)
+    const isCoarse = window.matchMedia("(pointer: coarse)").matches
+    // conveyor prefetch window: photos the wall will bind within the next
+    // ~2 wraps — kept warm so scroll-time binds are always cache hits
+    const PREFETCH = 12
     const vh = window.innerHeight
 
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      // no MSAA: the wall is axis-aligned photo quads — there are no
+      // geometric edges to alias, but the MSAA buffer costs real bandwidth
+      // at DPR2 (and it did not survive the perf budget on mobile)
+      antialias: false,
       alpha: false,
+      powerPreference: "high-performance",
     })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    // mobile: cap DPR at 1.5 — saves ~44% pixels vs 2 at near-zero visual
+    // cost for photos (desktop keeps 2)
+    renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio, isCoarse ? 1.5 : 2),
+    )
     renderer.setSize(vw, vh)
     renderer.setClearColor(isDark ? 0x080808 : 0xfefefe, 1)
 
@@ -128,6 +142,39 @@ export default function WebGLGallery({
     // thumb URL → texture (null while loading). Survives pool switches.
     const texCache = new Map<string, THREE.Texture | null>()
 
+    // ── texture cache: LRU with idle-time GPU pre-upload ──────────────
+    // Textures lazy-upload to the GPU on first draw; letting that happen
+    // mid-scroll (wrap rebinds) caused periodic hitches (960px textures =
+    // 2.4MB + mipmaps per upload). We (a) cap residency so mobile unified
+    // memory stays bounded, (b) pre-upload new textures at idle, (c)
+    // prefetch the photos the conveyor will need next — so binding
+    // mid-scroll is always a cache hit.
+    const MAX_TEX = isCoarse ? 40 : 64
+    const texAge = new Map<string, number>()
+    let texClock = 0
+    const idle: (cb: () => void) => void =
+      typeof requestIdleCallback === "function"
+        ? (cb) => requestIdleCallback(cb, { timeout: 500 })
+        : (cb) => setTimeout(cb, 0)
+    const uploadQueue: THREE.Texture[] = []
+    let uploadScheduled = false
+    const drainUploads = () => {
+      uploadScheduled = false
+      if (disposedRef.current || uploadQueue.length === 0) return
+      // force the GPU upload NOW (idle) instead of on first draw mid-scroll
+      renderer.initTexture(uploadQueue.shift()!)
+      uploadScheduled = true
+      idle(drainUploads)
+    }
+    const queueUpload = (tex: THREE.Texture) => {
+      if (disposedRef.current) return
+      uploadQueue.push(tex)
+      if (!uploadScheduled) {
+        uploadScheduled = true
+        idle(drainUploads)
+      }
+    }
+
     // ── conveyor state ─────────────────────────────────────────────────
     let poolArr: WallPhoto[] = []
     let N = 1
@@ -136,11 +183,6 @@ export default function WebGLGallery({
     let lastLap = 0
     let suppressWrap = 0 // frames to ignore wrap jumps (pool/scroll resets)
     let lastNcols = ncolsFor(window.innerWidth)
-    // touch devices: tap once → hover panel, tap the same photo again → open.
-    // (pointerleave fires right after touchend, so the panel must persist
-    // instead of being cleared by the !pointerInside branch.)
-    const isCoarse = window.matchMedia("(pointer: coarse)").matches
-
     const planes: THREE.Mesh[] = []
     for (let i = 0; i < SLOT_COUNT; i++) {
       const mat = new THREE.MeshBasicMaterial({
@@ -157,21 +199,69 @@ export default function WebGLGallery({
       planes.push(mesh)
     }
 
+    const evictIfNeeded = () => {
+      while (texCache.size > MAX_TEX) {
+        // oldest entry that is not currently bound to a visible plane
+        let oldestKey: string | null = null
+        let oldestAge = Infinity
+        for (const [k, t] of texCache) {
+          if (!t) continue // still loading
+          if (
+            planes.some(
+              (m) =>
+                m.userData.wp &&
+                (m.userData.wp as WallPhoto).photo.thumb === k,
+            )
+          )
+            continue
+          const age = texAge.get(k) ?? Infinity
+          if (age < oldestAge) {
+            oldestAge = age
+            oldestKey = k
+          }
+        }
+        if (oldestKey === null) break // all resident are in use
+        texCache.get(oldestKey)?.dispose()
+        texCache.delete(oldestKey)
+        texAge.delete(oldestKey)
+      }
+    }
+
+    // prefetch upcoming conveyor photos so wraps are always cache hits
+    const prefetch = () => {
+      if (!seq.length) return
+      for (let k = 0; k < PREFETCH; k++) {
+        ensureTex(seq[(nextIdx + k) % N])
+      }
+    }
+
     const ensureTex = (wp: WallPhoto) => {
       const key = wp.photo.thumb
-      if (texCache.has(key)) return
+      if (texCache.has(key)) {
+        texAge.set(key, texClock++) // LRU touch
+        return
+      }
       texCache.set(key, null) // loading marker
+      texAge.set(key, texClock++)
       loader.load(key, (tex) => {
-        if (disposedRef.current) return
+        if (disposedRef.current) {
+          tex.dispose()
+          return
+        }
         tex.colorSpace = THREE.SRGBColorSpace
         tex.generateMipmaps = true
         tex.minFilter = THREE.LinearMipmapLinearFilter
         tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
         texCache.set(key, tex)
+        queueUpload(tex) // GPU upload at idle, not mid-scroll
+        evictIfNeeded()
         // hand it to any plane waiting on this photo
         for (const m of planes) {
-          if (m.userData.want && m.userData.want.photo.thumb === key)
-            bindPlane(m, m.userData.want)
+          if (
+            m.userData.want &&
+            (m.userData.want as WallPhoto).photo.thumb === key
+          )
+            bindPlane(m, m.userData.want as WallPhoto)
         }
       })
     }
@@ -190,7 +280,7 @@ export default function WebGLGallery({
       mesh.userData.wp = wp
       mesh.userData.ar = wp.photo.w / wp.photo.h
       const mat = mesh.material as THREE.MeshBasicMaterial
-      const fresh = mat.map !== tex
+      const firstLoad = mat.map === null
       mat.map = tex
       mat.needsUpdate = true
       mesh.visible = true
@@ -201,7 +291,10 @@ export default function WebGLGallery({
           ? 0x888888
           : 0xffffff,
       )
-      if (fresh && mat.opacity < 0.99) {
+      if (firstLoad) {
+        // only the very first fill fades in; wrap rebinds happen at the
+        // screen seam (invisible) — tweening there just churns the render
+        // list (transparent ↔ opaque) and hitches mid-scroll
         mat.transparent = true
         gsap.to(mat, {
           opacity: 1,
@@ -212,6 +305,7 @@ export default function WebGLGallery({
           },
         })
       } else {
+        gsap.killTweensOf(mat)
         mat.transparent = false
         mat.opacity = 1
       }
@@ -242,6 +336,7 @@ export default function WebGLGallery({
         const wp = seq[i % N] // small pools repeat within the first screen
         bindPlane(planes[i], wp)
       }
+      prefetch()
       cbRef.current.onSeq(1)
     }
 
@@ -262,6 +357,7 @@ export default function WebGLGallery({
     const ndc = new THREE.Vector2()
     const pointerNdc = new THREE.Vector2(-2, -2)
     let pointerInside = false
+    let pointerMoved = false // hover raycast only runs on pointer movement
     let pendingKey: string | null = null
     let pendingCount = 0
 
@@ -297,6 +393,7 @@ export default function WebGLGallery({
 
     const onMove = (e: PointerEvent) => {
       pointerInside = true
+      pointerMoved = true // raycast only when the pointer actually moved
       pointerNdc.set(
         (e.clientX / window.innerWidth) * 2 - 1,
         -(e.clientY / window.innerHeight) * 2 + 1,
@@ -347,6 +444,9 @@ export default function WebGLGallery({
     )
 
     let raf = 0
+    let dirty = true // at least one render on start
+    let firstFrames = 3 // texture fades need a few frames even if static
+    let lastPrefetch = 0
     const tick = () => {
       raf = requestAnimationFrame(tick)
       const L = layoutRef.current
@@ -390,29 +490,48 @@ export default function WebGLGallery({
           }
           bindPlane(mesh, seq[nextIdx % N])
           nextIdx++
+          dirty = true
           cbRef.current.onSeq((nextIdx % N) + 1)
         }
         mesh.userData.lastY = y
 
-        mesh.position.set(
-          L.cols[col].x,
-          y,
-          L.cols[col].depth + ROW_Z_JITTER[row],
-        )
-        mesh.scale.set(L.colW, L.colW / (mesh.userData.ar as number), 1)
-        mesh.rotation.x = Math.max(
-          -MAX_TILT,
-          Math.min(MAX_TILT, vel * VEL_TILT),
-        )
+        const py = L.cols[col].x
+        const pz = L.cols[col].depth + ROW_Z_JITTER[row]
+        const psx = L.colW
+        const psy = L.colW / (mesh.userData.ar as number)
+        const prx = Math.max(-MAX_TILT, Math.min(MAX_TILT, vel * VEL_TILT))
+        if (
+          mesh.position.x !== py ||
+          mesh.position.y !== y ||
+          mesh.position.z !== pz ||
+          mesh.scale.x !== psx ||
+          mesh.scale.y !== psy ||
+          mesh.rotation.x !== prx
+        ) {
+          mesh.position.set(py, y, pz)
+          mesh.scale.set(psx, psy, 1)
+          mesh.rotation.x = prx
+          dirty = true
+        }
       }
-      renderer.render(scene, camera)
+
+      // render only when something actually changed: still wall = zero GPU
+      // work (previously every idle frame re-rendered the full DPR2 scene)
+      const settling = Math.abs(vel) > 0.05
+      if (dirty || settling || firstFrames > 0) {
+        firstFrames--
+        renderer.render(scene, camera)
+      }
 
       // hover: card stays while the cursor is on the canvas; null hits
-      // (seams) are ignored — only leaving the canvas clears it
+      // (seams) are ignored — only leaving the canvas clears it.
+      // Raycast only when the pointer moved (planes also move under a
+      // still cursor while scrolling — covered by `dirty` below)
       let candidate: string | null = null
       if (!activeRef.current) {
         setHover(null)
-      } else if (pointerInside) {
+      } else if (pointerInside && pointerMoved) {
+        pointerMoved = false
         raycaster.setFromCamera(pointerNdc, camera)
         const hits = raycaster.intersectObjects(planes, false)
         const hit = hits.find(
@@ -432,6 +551,13 @@ export default function WebGLGallery({
           pendingCount = 1
         }
         if (pendingCount >= HOVER_HOLD) setHover(pendingKey)
+      }
+
+      // prefetch check once per second of runtime (cheap; keeps the wrap
+      // window warm without doing map lookups every frame)
+      if (performance.now() - lastPrefetch > 1000) {
+        lastPrefetch = performance.now()
+        prefetch()
       }
     }
     raf = requestAnimationFrame(tick)
