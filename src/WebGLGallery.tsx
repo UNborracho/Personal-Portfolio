@@ -379,8 +379,14 @@ export default function WebGLGallery({
           // Phase 2: swap the pool underneath + staggered fade-in.
           // Repeated footer taps just restart here — state stays coherent.
           seedPool(false)
-          crossFading = false
           cbRef.current.onResetScroll?.()
+          // wrap rebinds stay suppressed until the staggered fade-in
+          // finishes (~0.8s) — a fast scroll during the wave would
+          // otherwise swap half-faded planes at the seam
+          transitionTimer = window.setTimeout(() => {
+            transitionTimer = 0
+            crossFading = false
+          }, 800)
         }, 260)
         return
       }
@@ -661,10 +667,13 @@ export default function WebGLGallery({
   }, [])
 
   // pool / category switch → re-seed the conveyor in place.
-  // Mount uses instant seed; subsequent pool changes cross-dissolve.
+  // First run (mount) seeds instantly; every later pool change (category
+  // switch) cross-dissolves. NOTE: the boolean is mountedRef itself —
+  // inverting it flipped the branches (mount dissolved, switches were
+  // instant → "no animation").
   const mountedRef = useRef(false)
   useEffect(() => {
-    setPoolRef.current?.(pool, !mountedRef.current)
+    setPoolRef.current?.(pool, mountedRef.current)
     mountedRef.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pool])
