@@ -25,7 +25,6 @@ import {
   seriesNumber,
   coverOf,
   shuffled,
-  COL_OFFSETS,
   type WallPhoto,
   type Series,
   type CatFilter,
@@ -518,6 +517,7 @@ function NavBar({
               </button>
             </div>
             <a
+              className="nav-mail"
               href="mailto:1162844453@qq.com"
               style={{
                 ...MONO,
@@ -581,13 +581,13 @@ function HoverPanel({
       style={{
         position: "fixed",
         bottom: 190,
-        left: 40,
+        left: "clamp(16px, 4vw, 40px)",
         zIndex: 500,
         background: bg,
         border: "1px solid color-mix(in srgb, var(--fg) 9%, transparent)",
         padding: "18px 22px 14px",
         pointerEvents: "none",
-        width: 292,
+        width: "min(292px, calc(100vw - 32px))",
         boxShadow: "0 8px 52px rgba(0,0,0,0.35)",
         opacity: 0,
         willChange: "opacity",
@@ -686,7 +686,7 @@ function FilterWords({
         bottom: 6,
         display: "flex",
         alignItems: "baseline",
-        gap: 18,
+        gap: "clamp(8px, 1.8vw, 18px)",
         whiteSpace: "nowrap",
       }}
     >
@@ -697,7 +697,7 @@ function FilterWords({
             onClick={() => onPick(w.slug)}
             style={{
               ...DISPLAY,
-              fontSize: "clamp(30px, 4.6vw, 64px)",
+              fontSize: "clamp(22px, 4.6vw, 64px)",
               lineHeight: 0.9,
               color: fg,
               background: "none",
@@ -720,7 +720,7 @@ function FilterWords({
           >
             {w.label}
             {i < words.length - 1 ? (
-              <span style={{ opacity: 0.35, marginLeft: 18 }}>,</span>
+              <span style={{ opacity: 0.35, marginLeft: "0.5em" }}>,</span>
             ) : null}
           </button>
         </span>
@@ -802,13 +802,6 @@ export default function App() {
     }
   }
 
-  const fallbackCols = useMemo(
-    () =>
-      Array.from({ length: 4 }, (_, ci) =>
-        pool.filter((_, i) => i % 4 === ci),
-      ),
-    [pool],
-  )
   const projectImages = projectSeries ? projectSeries.photos : []
   const currentProjectPhoto = projectImages[projectIndex]
 
@@ -1048,6 +1041,7 @@ export default function App() {
       <style>{`
         .nav-center { display: flex !important; }
         @media (max-width: 1139px) { .nav-center { display: none !important; } }
+        @media (max-width: 639px) { .nav-mail { display: none !important; } }
       `}</style>
 
       <div
@@ -1227,53 +1221,46 @@ export default function App() {
                 style={{
                   paddingTop: 80,
                   paddingBottom: 260,
-                  paddingLeft: 40,
-                  paddingRight: 40,
+                  paddingLeft: "clamp(16px, 4vw, 40px)",
+                  paddingRight: "clamp(16px, 4vw, 40px)",
                 }}
                 onMouseLeave={() => setHoveredWP(null)}
               >
                 <div
-                  style={{ display: "flex", gap: 28, alignItems: "flex-start" }}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fill, minmax(min(240px, 44vw), 1fr))",
+                    gap: 28,
+                    alignItems: "start",
+                  }}
                 >
-                  {fallbackCols.map((colWps, ci) => (
+                  {pool.map((wp) => (
                     <div
-                      key={ci}
+                      data-cursor
+                      className="masonry-card"
+                      key={`${wp.series.slug}-${wp.index}`}
                       style={{
-                        flex: 1,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 28,
-                        marginTop: COL_OFFSETS[ci],
+                        aspectRatio: `${wp.photo.w} / ${wp.photo.h}`,
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        background: "var(--bg-soft)",
+                        position: "relative",
                       }}
+                      onMouseEnter={() => setHoveredWP(wp)}
+                      onClick={() => openProject(wp)}
                     >
-                      {colWps.map((wp) => (
-                        <div
-                          data-cursor
-                          className="masonry-card"
-                          key={`${wp.series.slug}-${wp.index}`}
-                          style={{
-                            aspectRatio: `${wp.photo.w} / ${wp.photo.h}`,
-                            overflow: "hidden",
-                            cursor: "pointer",
-                            background: "var(--bg-soft)",
-                            position: "relative",
-                          }}
-                          onMouseEnter={() => setHoveredWP(wp)}
-                          onClick={() => openProject(wp)}
-                        >
-                          <img
-                            src={wp.photo.thumb}
-                            alt={`${wp.series.name} ${wp.index + 1}`}
-                            loading="lazy"
-                            style={{
-                              width: "100%",
-                              height: "100%",
-                              objectFit: "cover",
-                              display: "block",
-                            }}
-                          />
-                        </div>
-                      ))}
+                      <img
+                        src={wp.photo.thumb}
+                        alt={`${wp.series.name} ${wp.index + 1}`}
+                        loading="lazy"
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "cover",
+                          display: "block",
+                        }}
+                      />
                     </div>
                   ))}
                 </div>
@@ -1300,7 +1287,7 @@ export default function App() {
                 style={{
                   display: "flex",
                   gap: 28,
-                  padding: "0 40px",
+                  padding: "0 clamp(20px, 4vw, 40px)",
                   overflowX: "auto",
                   height: "52vh",
                 }}
@@ -1376,7 +1363,8 @@ export default function App() {
               left: 0,
               right: 0,
               zIndex: 400,
-              padding: "0 20px 18px",
+              padding:
+                "0 20px calc(18px + env(safe-area-inset-bottom, 0px))",
             }}
           >
             <div
@@ -1436,7 +1424,7 @@ export default function App() {
                 backdropFilter: "blur(4px)",
                 display: "flex",
                 flexDirection: "column",
-                padding: "80px 40px 200px",
+                padding: "80px clamp(20px, 5vw, 40px) 200px",
                 overflowY: "auto",
               }}
             >
@@ -1497,7 +1485,7 @@ export default function App() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(min(320px, 100%), 1fr))",
                   gap: 48,
                   maxWidth: 860,
                 }}
@@ -1751,18 +1739,26 @@ export default function App() {
               <button
                 key={i}
                 onClick={() => goToProjectImage(i)}
+                aria-label={`Go to photo ${i + 1}`}
                 style={{
-                  width: i === projectIndex ? 20 : 10,
-                  height: 1,
-                  background: fg,
                   border: "none",
-                  padding: 0,
+                  background: "none",
+                  padding: "12px 6px", // 44px-class touch target
                   cursor: "pointer",
-                  opacity: i === projectIndex ? 1 : 0.22,
-                  transition: "width 0.22s ease, opacity 0.22s ease",
                   display: "block",
                 }}
-              />
+              >
+                <span
+                  style={{
+                    display: "block",
+                    width: i === projectIndex ? 20 : 10,
+                    height: 1,
+                    background: fg,
+                    opacity: i === projectIndex ? 1 : 0.22,
+                    transition: "width 0.22s ease, opacity 0.22s ease",
+                  }}
+                />
+              </button>
             ))}
           </div>
           <div

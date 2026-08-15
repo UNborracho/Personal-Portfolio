@@ -4,9 +4,8 @@ import gsap from "gsap"
 import { COL_OFFSETS, shuffled, type WallPhoto } from "./shared"
 
 // ── Layout constants (tunable) ──────────────────────────────────────────
-const NCOLS = 4
 const ROWS = 9
-const SLOT_COUNT = NCOLS * ROWS // 36 planes on the conveyor
+const SLOT_COUNT = 4 * ROWS // max planes allocated; active = ncols × ROWS
 const NUM_CYCLES = 10 // scroll-spacer span (~ "endless")
 const GAP = 24
 const SIDE_MARGIN = 40
@@ -38,26 +37,33 @@ interface Props {
 }
 
 interface Layout {
+  ncols: number
   colW: number
   pitch: number
   cycleH: number
   cols: { x: number; depth: number }[]
 }
 
+// Responsive column count: 2 on phones, 3 on tablets, 4 on desktop.
+function ncolsFor(vw: number) {
+  return vw < 640 ? 2 : vw < 1140 ? 3 : 4
+}
+
 // Pitch must clear the tallest photo in the pool: height = colW / ar, so the
 // worst case is the smallest aspect ratio (2:3 portrait → 1.5 × colW).
 function computeLayout(vw: number, vh: number, minAr: number): Layout {
-  const colW = (vw - SIDE_MARGIN * 2 - GAP * (NCOLS - 1)) / NCOLS
+  const ncols = ncolsFor(vw)
+  const colW = (vw - SIDE_MARGIN * 2 - GAP * (ncols - 1)) / ncols
   const pitch = colW * Math.max(1.45, (1 / Math.max(minAr, 0.5)) * 1.12)
   const cycleH = ROWS * pitch
   const halfSpread = (vw - SIDE_MARGIN * 2) / 2
-  const cols = Array.from({ length: NCOLS }, (_, c) => {
+  const cols = Array.from({ length: ncols }, (_, c) => {
     const x = -halfSpread + colW / 2 + c * (colW + GAP)
     const xn = x / halfSpread
     const depth = CURVE * vw * xn * xn
     return { x, depth }
   })
-  return { colW, pitch, cycleH, cols }
+  return { ncols, colW, pitch, cycleH, cols }
 }
 
 export default function WebGLGallery({
@@ -126,9 +132,14 @@ export default function WebGLGallery({
     let poolArr: WallPhoto[] = []
     let N = 1
     let seq: WallPhoto[] = []
-    let nextIdx = 0 // photos handed out so far (starts at SLOT_COUNT)
+    let nextIdx = 0 // photos handed out so far (starts at active slots)
     let lastLap = 0
     let suppressWrap = 0 // frames to ignore wrap jumps (pool/scroll resets)
+    let lastNcols = ncolsFor(window.innerWidth)
+    // touch devices: tap once → hover panel, tap the same photo again → open.
+    // (pointerleave fires right after touchend, so the panel must persist
+    // instead of being cleared by the !pointerInside branch.)
+    const isCoarse = window.matchMedia("(pointer: coarse)").matches
 
     const planes: THREE.Mesh[] = []
     for (let i = 0; i < SLOT_COUNT; i++) {
@@ -211,27 +222,37 @@ export default function WebGLGallery({
         poolArr.length > 0
           ? Math.min(...poolArr.map((p) => p.photo.w / p.photo.h))
           : 1
+      const changed = ncolsFor(w) !== lastNcols
+      lastNcols = ncolsFor(w)
       layoutRef.current = computeLayout(w, h, minAr)
       setCycleH(layoutRef.current.cycleH)
+      // crossing a column breakpoint → re-seed (fresh aspect spread + the
+      // planes that were hidden beyond the old slot count need binding)
+      if (changed) seedPool()
     }
 
-    const setPool = (p: WallPhoto[]) => {
-      poolArr = p
-      N = Math.max(1, p.length)
-      seq = shuffled(p, WALL_SEED) // lap 0 — matches the preloader's list
-      nextIdx = SLOT_COUNT
+    // (re)bind every active slot from the lap-0 sequence
+    const seedPool = () => {
+      N = Math.max(1, poolArr.length)
+      seq = shuffled(poolArr, WALL_SEED) // lap 0 — matches the preloader's list
+      nextIdx = layoutRef.current.ncols * ROWS
       lastLap = 0
       suppressWrap = 3 // scroll resets to 0 → ignore the position jump
-      // recompute pitch for the new pool's tallest photo — with a static
-      // 1.45× pitch, tall portraits (ar < 0.69) overlap their column
-      // neighbor by (height − pitch) px; equal column depths then z-fight
-      // in the overlap every frame (the "sticky flicker" bug).
-      applyLayout(window.innerWidth, window.innerHeight)
       for (let i = 0; i < SLOT_COUNT; i++) {
         const wp = seq[i % N] // small pools repeat within the first screen
         bindPlane(planes[i], wp)
       }
       cbRef.current.onSeq(1)
+    }
+
+    const setPool = (p: WallPhoto[]) => {
+      poolArr = p
+      seedPool()
+      // recompute pitch for the new pool's tallest photo — with a static
+      // 1.45× pitch, tall portraits (ar < 0.69) overlap their column
+      // neighbor by (height − pitch) px; equal column depths then z-fight
+      // in the overlap every frame (the "sticky flicker" bug).
+      applyLayout(window.innerWidth, window.innerHeight)
     }
 
     setPoolRef.current = setPool
@@ -287,7 +308,18 @@ export default function WebGLGallery({
     const onClick = (e: PointerEvent) => {
       if (!activeRef.current) return
       const wp = hitAt(e.clientX, e.clientY)
-      if (wp) cbRef.current.onPick(wp)
+      if (!wp) {
+        if (isCoarse) setHover(null)
+        return
+      }
+      if (isCoarse) {
+        // first tap → show the series panel; second tap on the same photo
+        // → open the series deep-linked to it
+        if (wp.photo.thumb === hoveredKeyRef.current) cbRef.current.onPick(wp)
+        else setHover(wp.photo.thumb)
+      } else {
+        cbRef.current.onPick(wp)
+      }
     }
     canvas.addEventListener("pointermove", onMove)
     canvas.addEventListener("pointerleave", onLeave)
@@ -328,8 +360,13 @@ export default function WebGLGallery({
 
       for (const mesh of planes) {
         const i = mesh.userData.slot as number
-        const col = i % NCOLS
-        const row = Math.floor(i / NCOLS)
+        // responsive columns: planes beyond ncols×ROWS stay hidden
+        if (i >= L.ncols * ROWS) {
+          if (mesh.visible) mesh.visible = false
+          continue
+        }
+        const col = i % L.ncols
+        const row = Math.floor(i / L.ncols)
         const baseY = (row - (ROWS - 1) / 2) * L.pitch + COL_OFFSETS[col]
         let y = baseY - s
         y = wrapY(y, L.cycleH / 2, L.cycleH)
@@ -386,7 +423,7 @@ export default function WebGLGallery({
         const wp = hit ? ((hit.object.userData.wp as WallPhoto) ?? null) : null
         candidate = wp ? wp.photo.thumb : null
       }
-      if (!pointerInside) {
+      if (!pointerInside && !isCoarse) {
         setHover(null)
       } else if (candidate !== null) {
         if (candidate === pendingKey) pendingCount++
