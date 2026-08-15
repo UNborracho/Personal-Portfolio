@@ -1224,7 +1224,9 @@ export default function App() {
               onHover={setHoveredWP}
               onSeq={(n) => footerOdomRef.current?.to(n)}
               onResetScroll={() => {
-                lenisRef.current?.scrollTo(0, { immediate: true })
+                // animated glide (not a jump) — the wall keeps dissolving
+                // softly while it slides back to the top
+                lenisRef.current?.scrollTo(0, { duration: 0.9 })
                 footerOdomRef.current?.to(1)
               }}
               onPick={openProject}

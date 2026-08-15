@@ -259,13 +259,20 @@ export default function WebGLGallery({
         texCache.set(key, tex)
         queueUpload(tex) // GPU upload at idle, not mid-scroll
         evictIfNeeded()
-        // hand it to any plane waiting on this photo
+        // hand it to any plane waiting on this photo (preserve the
+        // crossfade stagger it was assigned — late arrivals fade too,
+        // instead of popping in fully opaque)
         for (const m of planes) {
           if (
             m.userData.want &&
             (m.userData.want as WallPhoto).photo.thumb === key
           )
-            bindPlane(m, m.userData.want as WallPhoto)
+            bindPlane(
+              m,
+              m.userData.want as WallPhoto,
+              !!m.userData.wantFade,
+              (m.userData.wantDelay as number) ?? 0,
+            )
         }
       })
     }
@@ -275,16 +282,83 @@ export default function WebGLGallery({
     // sort flicker, even if planes momentarily overlap.
     // ── category cross-dissolve state machine ─────────────────────
     // seedPool can run in two modes: instant (first mount / column
-    // breakpoint re-seed — no animation, matches previous behavior) or
-    // dissolved (category switch: old planes fade out in place, new pool
-    // fades back in with a per-plane stagger).
-    let transitioning = 0 // planes with an active fade tween
+    // breakpoint re-seed) or dissolved (category switch). A dissolved
+    // switch is a PER-CELL crossfade: each plane spawns a "ghost" mesh
+    // carrying its OLD texture on top (fading out) while the host binds
+    // the NEW photo underneath (fading in) — cells ripple diagonally,
+    // the wall is never blank.
+    const CROSSFADE = 0.55 // per-photo crossfade duration
+    const STAGGER = 0.055 // diagonal step between cells
+    let transitioning = 0 // active fade tweens (host + ghost)
     let transitionTimer = 0
     let crossFading = false
+
+    // ghost pool: temporary planes that carry the outgoing photo
+    const ghostPool: THREE.Mesh[] = []
+    const liveGhosts: THREE.Mesh[] = []
+    const recycleGhost = (g: THREE.Mesh) => {
+      g.visible = false
+      g.userData.host = null
+      const i = liveGhosts.indexOf(g)
+      if (i >= 0) liveGhosts.splice(i, 1)
+      ghostPool.push(g)
+    }
+    const killGhosts = () => {
+      for (const g of liveGhosts.slice()) {
+        gsap.killTweensOf(g.material as THREE.MeshBasicMaterial)
+        recycleGhost(g)
+      }
+    }
+    const spawnGhost = (
+      host: THREE.Mesh,
+      delay: number,
+    ) => {
+      const hMat = host.material as THREE.MeshBasicMaterial
+      if (!hMat.map || hMat.opacity < 0.5) return // host has nothing visible to ghost
+      let g = ghostPool.pop()
+      if (!g) {
+        g = new THREE.Mesh(
+          geo,
+          new THREE.MeshBasicMaterial({
+            transparent: true,
+            depthWrite: false,
+            color: 0xffffff,
+          }),
+        )
+        scene.add(g)
+      }
+      const mat = g.material as THREE.MeshBasicMaterial
+      mat.map = hMat.map
+      mat.needsUpdate = true
+      mat.color.setHex(hMat.color.getHex()) // preserve hover-dim tint
+      mat.opacity = 1
+      g.visible = true
+      g.renderOrder = 1 // ghost paints above its fading-in host
+      g.userData.host = host
+      g.position.copy(host.position)
+      g.position.z += 0.6 // clear the row z-jitter toward the camera
+      g.scale.copy(host.scale)
+      g.rotation.copy(host.rotation)
+      liveGhosts.push(g)
+      transitioning++
+      gsap.to(mat, {
+        opacity: 0,
+        duration: CROSSFADE,
+        delay,
+        ease: "power2.inOut",
+        onComplete: () => {
+          transitioning--
+          recycleGhost(g!)
+        },
+      })
+    }
     const killTransition = () => {
       if (transitionTimer) window.clearTimeout(transitionTimer)
       transitionTimer = 0
       crossFading = false
+      killGhosts()
+      for (const m of planes) gsap.killTweensOf(m.material as THREE.MeshBasicMaterial)
+      transitioning = 0
     }
 
     const bindPlane = (
@@ -296,6 +370,8 @@ export default function WebGLGallery({
       const tex = texCache.get(wp.photo.thumb)
       if (!tex) {
         mesh.userData.want = wp // try again when the texture arrives
+        mesh.userData.wantFade = fadingIn ? 1 : 0
+        mesh.userData.wantDelay = stagger
         ensureTex(wp)
         return
       }
@@ -319,11 +395,12 @@ export default function WebGLGallery({
         // rebinds happen at the invisible screen seam — no tween there
         // (churning the render list mid-scroll hitches)
         mat.transparent = true
-        mat.opacity = firstLoad ? 0 : mat.opacity
+        mat.opacity = 0 // ghost carries the old photo — host starts hidden
         gsap.killTweensOf(mat)
+        transitioning++
         gsap.to(mat, {
           opacity: 1,
-          duration: 0.45,
+          duration: fadingIn ? CROSSFADE : 0.45,
           ease: "power2.inOut",
           delay: stagger,
           onComplete: () => {
@@ -355,58 +432,42 @@ export default function WebGLGallery({
     // (re)bind every active slot from the lap-0 sequence
     const seedPool = (dissolve = false) => {
       killTransition()
-      if (dissolve) {
-        // Phase 1: fade current planes out in place (0.25s). Wrap rebinds
-        // are suppressed while crossFading so half-faded planes can't be
-        // swapped mid-dissolve. Scroll reset waits for the fade — jumping
-        // to top mid-dissolve would visibly tear the wall.
-        crossFading = true
-        for (const m of planes) {
-          if (!m.visible) continue
-          const mat = m.material as THREE.MeshBasicMaterial
-          gsap.killTweensOf(mat)
-          transitioning++
-          mat.transparent = true
-          gsap.to(mat, {
-            opacity: 0,
-            duration: 0.25,
-            ease: "power2.inOut",
-            onComplete: () => transitioning--,
-          })
-        }
-        transitionTimer = window.setTimeout(() => {
-          transitionTimer = 0
-          // Phase 2: swap the pool underneath + staggered fade-in.
-          // Repeated footer taps just restart here — state stays coherent.
-          seedPool(false)
-          cbRef.current.onResetScroll?.()
-          // wrap rebinds stay suppressed until the staggered fade-in
-          // finishes (~0.8s) — a fast scroll during the wave would
-          // otherwise swap half-faded planes at the seam
-          transitionTimer = window.setTimeout(() => {
-            transitionTimer = 0
-            crossFading = false
-          }, 800)
-        }, 260)
-        return
-      }
       N = Math.max(1, poolArr.length)
       seq = shuffled(poolArr, WALL_SEED) // lap 0 — matches the preloader's list
       nextIdx = layoutRef.current.ncols * ROWS
       lastLap = 0
       suppressWrap = 3 // scroll resets to 0 → ignore the position jump
-      const staggered = !!prevPoolLen // cross-dissolve path (not first seed)
+      const staggered = dissolve && prevPoolLen > 0 // per-cell crossfade path
       prevPoolLen = poolArr.length
+      const ncols = layoutRef.current.ncols
       for (let i = 0; i < SLOT_COUNT; i++) {
-        const wp = seq[i % N] // small pools repeat within the first screen
-        const col = i % layoutRef.current.ncols
-        const row = Math.floor(i / layoutRef.current.ncols)
-        // diagonal wave: top-left lands first, bottom-right last (~0.5s span)
-        const stagger = staggered ? (col + row) * 0.022 : 0
-        bindPlane(planes[i], wp, staggered, stagger)
+        const wp = seq[i % N]
+        const col = i % ncols
+        const row = Math.floor(i / ncols)
+        // diagonal ripple, one cell after another — "一个一个" fade
+        const delay = staggered ? (col + row) * STAGGER : 0
+        const plane = planes[i]
+        if (staggered) {
+          // ghost carries the OLD photo on top (fades out); host below
+          // binds the NEW photo and fades in on the same clock — a true
+          // per-cell crossfade, wall never blank
+          spawnGhost(plane, delay)
+        }
+        bindPlane(plane, wp, staggered, delay)
       }
       prefetch()
       cbRef.current.onSeq(1)
+      if (staggered) {
+        crossFading = true
+        // wrap rebinds stay suppressed until every cell finished its
+        // crossfade (last start + duration), then release
+        const span = (ncols - 1 + ROWS - 1) * STAGGER + CROSSFADE + 0.1
+        transitionTimer = window.setTimeout(() => {
+          transitionTimer = 0
+          crossFading = false
+        }, span * 1000)
+        cbRef.current.onResetScroll?.()
+      }
     }
 
     const setPool = (p: WallPhoto[], dissolve = false) => {
@@ -596,6 +657,18 @@ export default function WebGLGallery({
         }
       }
 
+      // ghosts track their host's transform (scroll-to-top animates the
+      // wall during the crossfade — a static ghost would visibly detach)
+      for (let gi = liveGhosts.length - 1; gi >= 0; gi--) {
+        const g = liveGhosts[gi]
+        const host = g.userData.host as THREE.Mesh | null
+        if (!host || !host.visible) continue
+        g.position.copy(host.position)
+        g.position.z += 0.6
+        g.scale.copy(host.scale)
+        g.rotation.copy(host.rotation)
+      }
+
       // render only when something actually changed: still wall = zero GPU
       // work; fades (cross-dissolve / first load) always need frames
       const settling = Math.abs(vel) > 0.05
@@ -659,6 +732,11 @@ export default function WebGLGallery({
         ;(m.material as THREE.MeshBasicMaterial).dispose()
       })
       geo.dispose()
+      killGhosts()
+      ghostPool.forEach((g) => {
+        gsap.killTweensOf(g.material as THREE.MeshBasicMaterial)
+        ;(g.material as THREE.MeshBasicMaterial).dispose()
+      })
       texCache.forEach((t) => t?.dispose())
       texCache.clear()
       renderer.dispose()
