@@ -13,6 +13,7 @@ import gsap from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import WebGLGallery from './WebGLGallery'
 import Cursor from './Cursor'
+import { useRoute, nav, navReplace, type Mode } from './router'
 import {
   WORKS,
   getProjectImages,
@@ -25,7 +26,6 @@ import {
 gsap.registerPlugin(ScrollTrigger)
 
 type View = 'preloader' | 'main' | 'project'
-type Mode = 'overview' | 'list'
 
 const NOISE = `url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>")`
 
@@ -176,14 +176,12 @@ function Chars({ text, charStyle }: { text: string; charStyle?: React.CSSPropert
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('preloader')
-  const [mode, setMode] = useState<Mode>('overview')
-  const [infoOpen, setInfoOpen] = useState(false)
+  const route = useRoute()
+  const [introDone, setIntroDone] = useState(false)
   const [hoveredWork, setHoveredWork] = useState<Work | null>(null)
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     (typeof localStorage !== 'undefined' && (localStorage.getItem('theme') as 'light' | 'dark')) || 'light',
   )
-  const [projectWork, setProjectWork] = useState<Work | null>(null)
   const [projectIndex, setProjectIndex] = useState(0)
 
   const lenisRef = useRef<Lenis | null>(null)
@@ -194,6 +192,8 @@ export default function App() {
   const footerOdomRef = useRef<OdometerHandle>(null)
   const projectOdomRef = useRef<OdometerHandle>(null)
   const projectIdxRef = useRef(0)
+  const routePhotoRef = useRef(route.photo)
+  const lastMainModeRef = useRef<Mode>('overview')
   const clock = useClock()
   const webglOk = useWebGLOk()
 
@@ -202,6 +202,16 @@ export default function App() {
     () => (lenisRef.current ? lenisRef.current.animatedScroll : window.scrollY),
     [],
   )
+
+  // ── Route → view state ─────────────────────────────────────────────
+  // The hash is the single source of truth once the intro has played;
+  // deep links (#/p/2/5) land directly on the routed view.
+  const routedWork = route.workId !== null ? WORKS.find((w) => w.id === route.workId) ?? null : null
+  const view: View = !introDone ? 'preloader' : route.view === 'project' && routedWork ? 'project' : 'main'
+  const mode: Mode = view === 'project' ? 'overview' : route.mode
+  const infoOpen = view === 'main' && route.info
+  const projectWork = view === 'project' ? routedWork : null
+  routePhotoRef.current = route.photo
 
   const isDark = theme === 'dark'
   const bg = isDark ? '#080808' : '#FEFEFE'
@@ -247,6 +257,11 @@ export default function App() {
     }
   }, [view, mode])
 
+  // remember the last main mode so closing a project returns to it
+  useEffect(() => {
+    if (view === 'main' && (mode === 'overview' || mode === 'list')) lastMainModeRef.current = mode
+  }, [view, mode])
+
   // ── Intro ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (view !== 'preloader') return
@@ -261,7 +276,7 @@ export default function App() {
             const v = Math.round(this.targets()[0].val)
             if (counterRef.current) counterRef.current.textContent = `${String(v).padStart(3, '0')}%`
           },
-          onComplete: () => setTimeout(() => setView('main'), 350),
+          onComplete: () => setTimeout(() => setIntroDone(true), 350),
         },
       )
       gsap.from('.intro-char', {
@@ -285,11 +300,14 @@ export default function App() {
   useEffect(() => {
     if (view !== 'project' || !projectWork) return
     const lenis = lenisRef.current
-    lenis?.scrollTo(0, { immediate: true })
-    projectIdxRef.current = 0
-    setProjectIndex(0)
-    projectOdomRef.current?.raw(1)
     const imgs = projectImages
+    const workId = projectWork.id
+    // deep link (#/p/:id/:n) → land on the routed photo, clamped
+    const startIdx = Math.min(Math.max(0, routePhotoRef.current - 1), imgs.length - 1)
+    lenis?.scrollTo(startIdx * window.innerHeight, { immediate: true })
+    projectIdxRef.current = startIdx
+    setProjectIndex(startIdx)
+    projectOdomRef.current?.raw(startIdx + 1)
 
     const ctx = gsap.context(() => {
       gsap.utils.toArray<HTMLElement>('.project-img').forEach((img) => {
@@ -316,6 +334,8 @@ export default function App() {
           if (intIdx !== projectIdxRef.current) {
             projectIdxRef.current = intIdx
             setProjectIndex(intIdx)
+            // keep the address in sync without spamming history
+            navReplace(`#/p/${workId}/${intIdx + 1}`)
           }
         },
       })
@@ -326,20 +346,26 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, projectWork, projectImages.length])
 
+  // hash → scroll: tick clicks / back / forward land on the routed photo
+  useEffect(() => {
+    if (view !== 'project' || !projectWork || !projectImages.length) return
+    const idx = Math.min(Math.max(0, route.photo - 1), projectImages.length - 1)
+    if (idx !== projectIdxRef.current) {
+      projectIdxRef.current = idx
+      setProjectIndex(idx)
+      lenisRef.current?.scrollTo(idx * window.innerHeight, { duration: 1.2 })
+    }
+  }, [route.photo, view, projectWork, projectImages.length])
+
   function openProject(work: Work) {
     setHoveredWork(null)
-    setProjectWork(work)
-    setInfoOpen(false)
-    setView('project')
+    nav(`#/p/${work.id}`)
   }
   function closeProject() {
-    setProjectWork(null)
-    setView('main')
+    nav(lastMainModeRef.current === 'list' ? '#/list' : '#/')
   }
   function goToProjectImage(i: number) {
-    setProjectIndex(i)
-    projectIdxRef.current = i
-    lenisRef.current?.scrollTo(i * window.innerHeight, { duration: 1.2 })
+    if (projectWork) nav(`#/p/${projectWork.id}/${i + 1}`)
   }
 
   // ── Nav bar ──────────────────────────────────────────────────────────
@@ -356,7 +382,7 @@ export default function App() {
         }}
       >
         <button
-          onClick={() => { setView('main'); setInfoOpen(false) }}
+          onClick={() => nav('#/')}
           style={{ ...DISPLAY, fontSize: 13, color: fg, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap', letterSpacing: '0.04em' }}
         >
           YOUR NAME
@@ -381,11 +407,11 @@ export default function App() {
               <div style={{ display: 'flex', alignItems: 'center' }}>
                 {(['overview', 'list'] as Mode[]).map((m) => (
                   <span key={m} style={{ display: 'flex', alignItems: 'center' }}>
-                    <button onClick={() => { setMode(m); setInfoOpen(false) }} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: 'none', cursor: 'pointer', opacity: mode === m && !infoOpen ? 1 : 0.32, padding: '0 2px' }}>{m.toUpperCase()}</button>
+                    <button onClick={() => nav(m === 'overview' ? '#/' : `#/${m}`)} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: 'none', cursor: 'pointer', opacity: mode === m && !infoOpen ? 1 : 0.32, padding: '0 2px' }}>{m.toUpperCase()}</button>
                     <span style={{ ...MONO, fontSize: 11, color: fg, opacity: 0.22, padding: '0 5px' }}>/</span>
                   </span>
                 ))}
-                <button onClick={() => setInfoOpen((v) => !v)} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: 'none', cursor: 'pointer', opacity: infoOpen ? 1 : 0.32, padding: '0 2px' }}>INFO</button>
+                <button onClick={() => nav(infoOpen ? (mode === 'list' ? '#/list' : '#/') : mode === 'list' ? '#/list/info' : '#/info')} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: 'none', cursor: 'pointer', opacity: infoOpen ? 1 : 0.32, padding: '0 2px' }}>INFO</button>
               </div>
               <a href="mailto:info@yourmail.com" style={{ ...MONO, fontSize: 10, color: fg, opacity: 0.45, textDecoration: 'none' }} onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')} onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}>INFO@YOURMAIL.COM</a>
               <button onClick={toggleTheme} title="Toggle theme" style={{ width: 22, height: 22, borderRadius: '50%', border: `1px solid ${fg}45`, background: 'none', cursor: 'pointer', color: fg, fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{isDark ? '○' : '●'}</button>
@@ -506,7 +532,7 @@ export default function App() {
             <div data-lenis-prevent style={{ position: 'fixed', inset: 0, zIndex: 550, background: isDark ? 'rgba(8,8,8,0.97)' : 'rgba(254,254,254,0.97)', backdropFilter: 'blur(4px)', display: 'flex', flexDirection: 'column', padding: '80px 40px 200px', overflowY: 'auto' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 52 }}>
                 <div style={{ ...DISPLAY, fontSize: 'clamp(48px, 6.8vw, 98px)', lineHeight: 0.9, color: fg }}>Info</div>
-                <button onClick={() => setInfoOpen(false)} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: `1px solid ${fg}`, padding: '4px 10px', cursor: 'pointer', marginTop: 10 }}>[CLOSE]</button>
+                <button onClick={() => nav(mode === 'list' ? '#/list' : '#/')} style={{ ...MONO, fontSize: 11, color: fg, background: 'none', border: `1px solid ${fg}`, padding: '4px 10px', cursor: 'pointer', marginTop: 10 }}>[CLOSE]</button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 48, maxWidth: 860 }}>
                 <div>
