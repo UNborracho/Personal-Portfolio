@@ -3,8 +3,8 @@
 //
 // Usage: pnpm photos
 //   - EXIF orientation auto-corrected
-//   - thumb: 720px long edge, webp q75   (gallery wall / WebGL textures)
-//   - full:  1920px long edge, webp q78  (project pages) — q85 for LIVE series
+//   - thumb: 960px long edge, webp q78   (gallery wall / WebGL textures)
+//   - full:  2560px long edge, webp q80  (project pages) — q85 for LIVE series
 //   - output names carry an 8-char content hash → immutable browser caching
 //   - re-runs only re-encode changed files (hash comparison)
 //
@@ -26,20 +26,25 @@ const MANIFEST = path.join(ROOT, "src", "photo-manifest.ts")
 // slug:     URL identity (#/p/<slug>/n) — stable forever
 // category: filter axis (#/street …) — FOOTER_WORDS below must stay in sync
 // quality:  full-size webp quality (dark-stage series get 85 to protect
-//           highlights/gradients; everything else 78)
+//           highlights/gradients; everything else 80)
+//
+// Clarity rationale (measured on a 2056-CSS / 2×DPR screen):
+//   wall column ≈ 476 CSS = 952 physical px → 960px thumb covers it 1:1
+//   project 85vw ≈ 3.5k physical px → 2560 is the Retina sweet spot
+//   (720/1920 left the wall upscaled 1.32× and project 1.82× → "soft")
 const SERIES = [
-  { dir: "BEIJING",  slug: "beijing",   name: "BEIJING",   category: "street",  year: 2025, fullQuality: 78 },
-  { dir: "SHANGHAI", slug: "shanghai",  name: "SHANGHAI",  category: "street",  year: 2026, fullQuality: 78 },
-  { dir: "SICHUAN",  slug: "sichuan",   name: "SICHUAN",   category: "scenery", year: 2026, fullQuality: 78 },
-  { dir: "YUNNAN",   slug: "yunnan",    name: "YUNNAN",    category: "scenery", year: 2026, fullQuality: 78 },
+  { dir: "BEIJING",  slug: "beijing",   name: "BEIJING",   category: "street",  year: 2025, fullQuality: 80 },
+  { dir: "SHANGHAI", slug: "shanghai",  name: "SHANGHAI",  category: "street",  year: 2026, fullQuality: 80 },
+  { dir: "SICHUAN",  slug: "sichuan",   name: "SICHUAN",   category: "scenery", year: 2026, fullQuality: 80 },
+  { dir: "YUNNAN",   slug: "yunnan",    name: "YUNNAN",    category: "scenery", year: 2026, fullQuality: 80 },
   { dir: "DT",       slug: "david-tao", name: "DAVID TAO", category: "live",    year: 2026, fullQuality: 85 },
 ]
 
 // reserved URL words that series/category slugs must never collide with
 const RESERVED = new Set(["p", "list", "index", "info"])
 
-const THUMB_EDGE = 720
-const FULL_EDGE = 1920
+const THUMB_EDGE = 960
+const FULL_EDGE = 2560
 
 // ── helpers ─────────────────────────────────────────────────────────────
 const fileHash = (buf) => createHash("sha256").update(buf).digest("hex").slice(0, 8)
@@ -98,7 +103,7 @@ for (const s of SERIES) {
     const base = sharp(raw).rotate() // EXIF orientation
 
     // thumb
-    const t = await encode(base, THUMB_EDGE, 75)
+    const t = await encode(base, THUMB_EDGE, 78)
     const tName = `${s.slug}-${String(i + 1).padStart(2, "0")}-t-${fileHash(t.data)}.webp`
     fs.writeFileSync(path.join(OUT, tName), t.data)
 
@@ -130,7 +135,7 @@ if (fs.existsSync(AVATAR)) {
   const f = fs.readdirSync(AVATAR).find((x) => /\.(jpe?g|png|webp)$/i.test(x))
   if (f) {
     const base = sharp(fs.readFileSync(path.join(AVATAR, f))).rotate()
-    const a = await encode(base, 900, 80)
+    const a = await encode(base, 1200, 82)
     const name = `portrait-${fileHash(a.data)}.webp`
     fs.writeFileSync(path.join(OUT, name), a.data)
     avatarOut = { src: `/photos/${name}`, w: a.info.width, h: a.info.height }
