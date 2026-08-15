@@ -120,10 +120,12 @@ export default function WebGLGallery({
       alpha: false,
       powerPreference: "high-performance",
     })
-    // Photos ARE the content — never upscale the canvas. DPR 1.5 looked
-    // visibly soft on 3× phones (the compositor stretched it 2×). Cost is
-    // bounded elsewhere (no MSAA, upload scheduling, LRU).
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isCoarse ? 3 : 2))
+    // Photos ARE the content — DPR 1.5 was visibly soft on 3× phones
+    // (compositor upscale 2×). DPR 3 fills 23M px/frame on mid-range GPUs
+    // and re-introduced scroll jank. 2 is the balance: 1.5× upscale of
+    // natural photos is near-invisible, fill rate stays sane. Bump to 3
+    // only on flagships if sharpness still feels short.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(vw, vh)
     renderer.setClearColor(isDark ? 0x080808 : 0xfefefe, 1)
 
