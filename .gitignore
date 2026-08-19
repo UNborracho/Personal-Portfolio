@@ -23,3 +23,7 @@ photo/
 !.figma/make/
 .figma/make/*
 !.figma/make/site.json
+
+# internal working docs (not part of the shipped site)
+site-info.md
+src/imports/
