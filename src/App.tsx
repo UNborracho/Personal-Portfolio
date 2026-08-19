@@ -11,7 +11,11 @@ import {
 import Lenis from "lenis"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
-import WebGLGallery, { WALL_SEED } from "./WebGLGallery"
+import WebGLGallery, {
+  WALL_SEED,
+  INTRO_EXPLODE,
+  type GalleryHandle,
+} from "./WebGLGallery"
 import Cursor from "./Cursor"
 import Transition from "./Transition"
 import { useRoute, nav, navReplace, type Mode } from "./router"
@@ -23,7 +27,6 @@ import {
   wallForCat,
   seriesBySlug,
   seriesNumber,
-  coverOf,
   shuffled,
   type WallPhoto,
   type Series,
@@ -32,7 +35,7 @@ import {
 
 gsap.registerPlugin(ScrollTrigger)
 
-type View = "preloader" | "main" | "project"
+type View = "main" | "project"
 
 const NOISE = `url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>")`
 
@@ -88,10 +91,10 @@ interface OdometerHandle {
   to: (v: number) => void
   raw: (v: number) => void
 }
-const Odometer = forwardRef<
-  OdometerHandle,
-  { digits: number; digitStyle: React.CSSProperties }
->(function Odometer({ digits, digitStyle }, ref) {
+const Odometer = forwardRef<OdometerHandle, {
+  digits: number
+  digitStyle: React.CSSProperties
+}>(function Odometer({ digits, digitStyle }, ref) {
   const wrapRef = useRef<HTMLSpanElement>(null)
   const [cellH, setCellH] = useState(0)
   const cellHRef = useRef(0)
@@ -222,7 +225,10 @@ function Chars({
           className="intro-char"
           style={{
             display: "inline-block",
-            willChange: "transform",
+            // NOTE no willChange — ~50 intro chars each pinned a Safari
+            // compositing layer through the whole load, then the layer
+            // tree collapsed AT the explode (mid-animation stall). RP's
+            // SplitText chars carry no willChange either.
             ...charStyle,
           }}
         >
@@ -233,34 +239,155 @@ function Chars({
   )
 }
 
+// ── RP intro photo chip: the WALL'S HERO (lap-0 first photo) ──────────
+// Same photo as the stack top the WebGL handoff reveals — the chip
+// vanishes at the beat's end exactly where the hero plane already sits
+// (150px, same spot): a seamless swap. (RP's chip is a separate portrait
+// that visibly changes photo at handoff — ours swaps identities for free
+// by being the SAME image; user-confirmed intent.)
+const HERO_CHIP = shuffled(WALL, WALL_SEED)[0].photo.thumb
+
+// ── RP intro odometer: 3 mechanical digit columns ──────────────────────
+// Exact percentage readout 000→100 with monotonic (never-backward) strips:
+//   hundreds "01"                  — flips 0→1 when progress crosses 100
+//   tens     "0…9" + "0"           — 11 entries, settles on the wrap 0
+//   ones     "0…9" ×10 + "0"       — 101 entries, ten decades, wraps home
+// NOTE: the literal RP 20-digit double-decade strip swept by index(P)
+// cannot hit the recorded real milestones (017→050→100) — decade tiling
+// keeps the same mechanical wrap aesthetic with an exact readout.
+// Smoothness comes from the caller's single power2.inOut value tween;
+// raw() just positions the wheels (data-v mirrors the value for tests).
+const ODOM_HUNDREDS = "01"
+const ODOM_TENS = "01234567890"
+const ODOM_ONES = "0123456789".repeat(10) + "0"
+
+interface IntroOdometerHandle {
+  raw: (v: number) => void
+}
+
+const IntroOdometer = forwardRef<
+  IntroOdometerHandle,
+  { digitStyle: React.CSSProperties }
+>(function IntroOdometer({ digitStyle }, ref) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const hRef = useRef<HTMLSpanElement>(null)
+  const tRef = useRef<HTMLSpanElement>(null)
+  const oRef = useRef<HTMLSpanElement>(null)
+  const [cellH, setCellH] = useState(0)
+  const cellHRef = useRef(0)
+  const curRef = useRef(0)
+
+  const position = (v: number) => {
+    const ch = cellHRef.current
+    if (!ch) return // not measured yet (or column hidden — mobile uses text)
+    const hi = v >= 100 ? 1 : 0
+    const ti = v >= 100 ? 10 : Math.floor(v / 10)
+    const oi = Math.min(100, Math.floor(v))
+    if (hRef.current)
+      hRef.current.style.transform = `translateY(${-hi * ch}px)`
+    if (tRef.current)
+      tRef.current.style.transform = `translateY(${-ti * ch}px)`
+    if (oRef.current)
+      oRef.current.style.transform = `translateY(${-oi * ch}px)`
+    if (rootRef.current)
+      rootRef.current.dataset.v = String(
+        Math.round(Math.min(100, Math.max(0, v))),
+      )
+  }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      raw(v) {
+        curRef.current = v
+        position(v)
+      },
+    }),
+    [],
+  )
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const cell = rootRef.current?.querySelector(
+        ".iod-cell",
+      ) as HTMLElement | null
+      if (!cell) return
+      const h = cell.offsetHeight
+      if (h && h !== cellHRef.current) {
+        cellHRef.current = h
+        setCellH(h)
+        position(curRef.current)
+      }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    if (rootRef.current) ro.observe(rootRef.current)
+    return () => ro.disconnect()
+  }, [])
+
+  // RP gradMask — CSS-only soft edges on the traveling columns
+  const column = (
+    list: string,
+    stripRef: React.RefObject<HTMLSpanElement | null>,
+    mask: boolean,
+  ) => (
+    <span
+      style={{
+        display: "inline-block",
+        overflow: "hidden",
+        height: cellH || undefined,
+        verticalAlign: "top",
+        ...(mask
+          ? {
+              maskImage:
+                "linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)",
+              WebkitMaskImage:
+                "linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)",
+            }
+          : {}),
+      }}
+    >
+      <span
+        ref={stripRef}
+        style={{ display: "block", willChange: "transform" }}
+      >
+        {list.split("").map((d, j) => (
+          <span
+            key={j}
+            className="iod-cell"
+            style={{ display: "block", lineHeight: 1, ...digitStyle }}
+          >
+            {d}
+          </span>
+        ))}
+      </span>
+    </span>
+  )
+
+  return (
+    <div
+      ref={rootRef}
+      data-v="0"
+      style={{
+        display: "inline-flex",
+        lineHeight: 1,
+        verticalAlign: "baseline",
+      }}
+    >
+      {column(ODOM_HUNDREDS, hRef, false)}
+      {column(ODOM_TENS, tRef, true)}
+      {column(ODOM_ONES, oRef, true)}
+    </div>
+  )
+})
+
 // ── View-transition choreography (reference-measured rhythm) ──────────
 // NOTE: the Transition wrapper (el) must NEVER get a transform — a
 // transformed ancestor becomes the containing block for fixed descendants.
 // Motion lives on children only; the exit drift runs on the .list-stage.
 
-const listEnter = (el: HTMLElement) => {
-  const cards = el.querySelectorAll(".list-card")
-  const stage = el.querySelector(".list-stage")
-  gsap.killTweensOf([el, ...cards, ...(stage ? [stage] : [])])
-  gsap.set(el, { opacity: 1 })
-  if (stage) gsap.set(stage, { y: 0 })
-  gsap.fromTo(
-    cards,
-    { opacity: 0, y: 26, scale: 1.04 },
-    {
-      opacity: 1,
-      y: 0,
-      scale: 1,
-      duration: 0.6,
-      ease: "power2.inOut",
-      stagger: 0.045,
-      delay: 0.3,
-    },
-  )
-}
 const fadeExit =
-  (duration: number) =>
-  (el: HTMLElement, done: () => void): void => {
+  (duration: number) => (el: HTMLElement, done: () => void): void => {
     gsap.killTweensOf(el)
     gsap.to(el, {
       opacity: 0,
@@ -270,32 +397,19 @@ const fadeExit =
     })
   }
 
-const listExit = (el: HTMLElement, done: () => void) => {
-  const stage = el.querySelector(".list-stage")
-  if (stage) {
-    gsap.killTweensOf(stage)
-    gsap.to(stage, { y: -10, duration: 0.25, ease: "power2.inOut" })
-  }
-  fadeExit(0.25)(el, done)
-}
-
 // DOM masonry fallback: cards stagger in shortly after the beat
 const masonryEnter = (el: HTMLElement) => {
   const cards = el.querySelectorAll(".masonry-card")
   gsap.killTweensOf([el, ...cards])
   gsap.set(el, { opacity: 1 })
-  gsap.fromTo(
-    cards,
-    { opacity: 0, y: 20 },
-    {
-      opacity: 1,
-      y: 0,
-      duration: 0.5,
-      ease: "power2.inOut",
-      stagger: 0.03,
-      delay: 0.15,
-    },
-  )
+  gsap.fromTo(cards, { opacity: 0, y: 20 }, {
+    opacity: 1,
+    y: 0,
+    duration: 0.5,
+    ease: "power2.inOut",
+    stagger: 0.03,
+    delay: 0.15,
+  })
 }
 const masonryExit = fadeExit(0.25)
 
@@ -307,40 +421,35 @@ const infoEnter = (el: HTMLElement) => {
   gsap.killTweensOf([el, ...chars, ...blocks, ...portrait, ...policy])
   gsap.set(el, { opacity: 0 })
   gsap.to(el, { opacity: 1, duration: 0.6, ease: "power2.inOut", delay: 0.7 })
-  gsap.fromTo(
-    chars,
-    { yPercent: 110, rotate: 4 },
-    {
-      yPercent: 0,
-      rotate: 0,
-      duration: 0.7,
-      ease: "power2.inOut",
-      stagger: 0.03,
-      delay: 0.85,
-    },
-  )
-  gsap.fromTo(
-    blocks,
-    { opacity: 0, y: 14 },
-    {
-      opacity: 1,
-      y: 0,
-      duration: 0.5,
-      ease: "power2.inOut",
-      stagger: 0.045,
-      delay: 0.95,
-    },
-  )
-  gsap.fromTo(
-    portrait,
-    { scale: 1.5, opacity: 0 },
-    { scale: 1, opacity: 0.82, duration: 1, ease: "power2.inOut", delay: 1 },
-  )
-  gsap.fromTo(
-    policy,
-    { opacity: 0 },
-    { opacity: 1, duration: 0.5, ease: "power2.inOut", delay: 1.2 },
-  )
+  gsap.fromTo(chars, { yPercent: 110, rotate: 4 }, {
+    yPercent: 0,
+    rotate: 0,
+    duration: 0.7,
+    ease: "power2.inOut",
+    stagger: 0.03,
+    delay: 0.85,
+  })
+  gsap.fromTo(blocks, { opacity: 0, y: 14 }, {
+    opacity: 1,
+    y: 0,
+    duration: 0.5,
+    ease: "power2.inOut",
+    stagger: 0.045,
+    delay: 0.95,
+  })
+  gsap.fromTo(portrait, { scale: 1.5, opacity: 0 }, {
+    scale: 1,
+    opacity: 0.82,
+    duration: 1,
+    ease: "power2.inOut",
+    delay: 1,
+  })
+  gsap.fromTo(policy, { opacity: 0 }, {
+    opacity: 1,
+    duration: 0.5,
+    ease: "power2.inOut",
+    delay: 1.2,
+  })
 }
 const infoExit = fadeExit(0.5)
 
@@ -348,7 +457,18 @@ const infoExit = fadeExit(0.5)
 // NOTE: these MUST live at module scope (see the remount bug note in git
 // history) — useClock ticks would otherwise re-create them every second.
 
+/** Hash of a category's main route (overview or list) — the single
+ *  source for the INFO toggle, close buttons and filter picks (was four
+ *  inline cat×mode ternary cascades that could drift apart). */
+function mainHref(cat: CatFilter, mode: Mode): string {
+  const parts: string[] = []
+  if (cat !== "all") parts.push(cat)
+  if (mode === "list") parts.push("list")
+  return `#/${parts.join("/")}`
+}
+
 function NavBar({
+  headerRef,
   isDark,
   fg,
   mode,
@@ -358,6 +478,7 @@ function NavBar({
   onClose,
   onToggleTheme,
 }: {
+  headerRef?: React.RefObject<HTMLElement | null>
   isDark: boolean
   fg: string
   mode: Mode
@@ -375,6 +496,7 @@ function NavBar({
     window.matchMedia("(pointer: fine)").matches
   return (
     <header
+      ref={headerRef}
       style={{
         position: "fixed",
         top: 0,
@@ -500,14 +622,7 @@ function NavBar({
               ))}
               <button
                 onClick={() => {
-                  const base =
-                    cat === "all"
-                      ? mode === "list"
-                        ? "#/list"
-                        : "#/"
-                      : mode === "list"
-                        ? `#/${cat}/list`
-                        : `#/${cat}`
+                  const base = mainHref(cat, mode)
                   nav(infoOpen ? base : `${base}/info`)
                 }}
                 style={{
@@ -631,14 +746,12 @@ function HoverPanel({
           marginBottom: 14,
         }}
       >
-        {(
-          [
-            ["CATEGORY", series.category.toUpperCase()],
-            ["YEAR", String(series.year)],
-            ["PHOTOS", String(series.photos.length)],
-            ["FRAME", `${index + 1} / ${series.photos.length}`],
-          ] as [string, string][]
-        ).map(([k, v]) => (
+        {([
+          ["CATEGORY", series.category.toUpperCase()],
+          ["YEAR", String(series.year)],
+          ["PHOTOS", String(series.photos.length)],
+          ["FRAME", `${index + 1} / ${series.photos.length}`],
+        ] as [string, string][]).map(([k, v]) => (
           <div key={k} style={{ display: "flex", gap: 10 }}>
             <span
               style={{
@@ -688,10 +801,6 @@ function FilterWords({
   return (
     <div
       style={{
-        position: "absolute",
-        left: "50%",
-        transform: "translateX(-50%)",
-        bottom: 6,
         display: "flex",
         alignItems: "baseline",
         gap: "clamp(8px, 1.8vw, 18px)",
@@ -699,7 +808,10 @@ function FilterWords({
       }}
     >
       {words.map((w, i) => (
-        <span key={w.slug} style={{ display: "inline-flex", alignItems: "baseline" }}>
+        <span
+          key={w.slug}
+          style={{ display: "inline-flex", alignItems: "baseline" }}
+        >
           <button
             data-cursor
             onClick={() => onPick(w.slug)}
@@ -714,8 +826,7 @@ function FilterWords({
               padding: 0,
               opacity: cat === w.slug ? 1 : 0.15,
               transition: "opacity 0.22s ease",
-              textDecoration:
-                cat === w.slug ? "underline" : "none",
+              textDecoration: cat === w.slug ? "underline" : "none",
               textDecorationThickness: 2,
               textUnderlineOffset: 6,
             }}
@@ -746,7 +857,7 @@ export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     (() => {
       try {
-        return (localStorage.getItem("theme") as "light" | "dark") || "light"
+        return localStorage.getItem("theme") as "light" | "dark" || "light"
       } catch {
         return "light"
       }
@@ -756,9 +867,10 @@ export default function App() {
 
   const lenisRef = useRef<Lenis | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
-  const preloaderRef = useRef<HTMLDivElement>(null)
-  const counterRef = useRef<HTMLDivElement>(null)
-  const barRef = useRef<HTMLDivElement>(null)
+  const introRef = useRef<HTMLDivElement>(null)
+  const introOdomRef = useRef<IntroOdometerHandle>(null)
+  const mobileCounterRef = useRef<HTMLDivElement>(null)
+  const chipRef = useRef<HTMLImageElement>(null)
   const projectRef = useRef<HTMLDivElement>(null)
   const footerOdomRef = useRef<OdometerHandle>(null)
   const projectOdomRef = useRef<OdometerHandle>(null)
@@ -768,21 +880,22 @@ export default function App() {
   const clock = useClock()
   const webglOk = useWebGLOk()
 
-  // sub-pixel scroll from Lenis (fractional) — falls back to integer window.scrollY
-  const getScroll = useCallback(
-    () => (lenisRef.current ? lenisRef.current.animatedScroll : window.scrollY),
-    [],
-  )
+  // RP info transition: refs to the hard-cut chrome elements (nav, footer;
+  // the canvas lives inside WebGLGallery and hides via its infoOpen prop)
+  const navRef = useRef<HTMLElement | null>(null)
+  const footerRef = useRef<HTMLElement | null>(null)
+  const wordsRef = useRef<HTMLDivElement>(null)
+  const galleryRef = useRef<GalleryHandle>(null)
+  const wasInfoOpenRef = useRef(false)
 
   // ── Route → view state ─────────────────────────────────────────────
-  // The hash is the single source of truth once the intro has played.
+  // The hash is the single source of truth from t=0 — the intro is a pure
+  // overlay curtain; the view beneath it (wall included) lives from mount,
+  // exactly like RP where the WebGL canvas renders behind the loader.
   const projectSeries =
     route.view === "project" ? seriesBySlug(route.series ?? "") : null
-  const view: View = !introDone
-    ? "preloader"
-    : route.view === "project" && projectSeries
-      ? "project"
-      : "main"
+  const view: View =
+    route.view === "project" && projectSeries ? "project" : "main"
   const mode: Mode = view === "project" ? "overview" : route.mode
   const infoOpen = view === "main" && route.info
   const pool = useMemo(() => wallForCat(route.cat), [route.cat])
@@ -820,7 +933,11 @@ export default function App() {
     lenis.on("scroll", ScrollTrigger.update)
     const tickerFn = (t: number) => lenis.raf(t * 1000)
     gsap.ticker.add(tickerFn)
-    gsap.ticker.lagSmoothing(0)
+    // RP (716.js): lagSmoothing(1000, 16) — frame spikes up to 1s are
+    // absorbed (elapsed folds to 16ms), so the explode/morph timelines
+    // glide through main-thread spikes instead of JUMPING. (0) passed
+    // every spike straight into gsap time — the 爆开卡顿's primary cause.
+    gsap.ticker.lagSmoothing(1000, 16)
     return () => {
       gsap.ticker.remove(tickerFn)
       lenis.destroy()
@@ -831,14 +948,19 @@ export default function App() {
   useEffect(() => {
     const lenis = lenisRef.current
     if (!lenis) return
-    if (infoOpen) lenis.stop()
+    // overview owns input (RP stack inside WebGLGallery): lock page scroll;
+    // the list filmstrip is equally input-driven, and info is a DOM overlay
+    // page — all three lock. Only the project view scrolls.
+    const lock = infoOpen || view === "main"
+    document.documentElement.style.overflow = lock ? "hidden" : ""
+    if (lock) lenis.stop()
     else lenis.start()
-  }, [infoOpen])
+  }, [infoOpen, view])
 
   // Reset scroll + odometer whenever the (WebGL) overview is entered.
-  // (Category switches no longer jump here — the wall cross-dissolves and
-  // calls onResetScroll at the fade-out beat instead, so the top-jump
-  // happens while the canvas is blank rather than mid-dissolve.)
+  // (Hash category changes reset the wall's own virtual position inside
+  // WebGLGallery — instantly — and call onResetScroll synchronously; the
+  // 1.4s glide tween is the info-exit path only.)
   useEffect(() => {
     if (view === "main" && mode === "overview") {
       lenisRef.current?.scrollTo(0, { immediate: true })
@@ -856,6 +978,70 @@ export default function App() {
   useEffect(() => {
     if (view !== "main" || mode !== "overview") setHoveredWP(null)
   }, [view, mode])
+
+  // ── RP filter-words relocation: list-only footer chrome ────────────
+  // Overview is a pure wall (no words). They fade IN at the overview→list
+  // transition midpoint (~0.7s in, matching the fly-in) and fade OUT the
+  // instant list exits.
+  useLayoutEffect(() => {
+    const el = wordsRef.current
+    if (!el) return
+    gsap.killTweensOf(el)
+    el.style.pointerEvents = mode === "list" ? "auto" : "none"
+    if (mode === "list") {
+      gsap.to(el, {
+        opacity: 1,
+        duration: 0.4,
+        ease: "power2.inOut",
+        delay: 0.7,
+      })
+    } else {
+      gsap.to(el, { opacity: 0, duration: 0.25, ease: "power2.inOut" })
+    }
+  }, [mode])
+
+  // ── RP info transition (hard cut in · glide-then-pop out) ───────────
+  // Enter #/info: canvas (gallery, via its infoOpen prop), nav and footer
+  // all go opacity:0 in the same instant — RP gsap.set(..., { opacity: 0,
+  // duration: 0 }): a hard cut, not a fade. Layout effect → lands in the
+  // route change's first paint. Exit: overview waits for the wall's 1.4s
+  // power2.inOut glide back to top (gallery.restoreFromInfo), then all
+  // three pop together via restoreChrome; list (and the DOM fallback)
+  // restores immediately — no wall to glide.
+  const restoreChrome = useCallback(() => {
+    const els = [navRef.current, footerRef.current].filter(
+      (el): el is HTMLElement => !!el,
+    )
+    if (els.length) {
+      gsap.killTweensOf(els)
+      gsap.set(els, { opacity: 1, pointerEvents: "auto" })
+    }
+    // back-at-top state, same as onResetScroll (page is locked in
+    // overview — instant, zero visual impact; odometer reads 01)
+    lenisRef.current?.scrollTo(0, { immediate: true })
+    footerOdomRef.current?.to(1)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (infoOpen) {
+      const els = [navRef.current, footerRef.current].filter(
+        (el): el is HTMLElement => !!el,
+      )
+      if (els.length) {
+        gsap.killTweensOf(els)
+        gsap.set(els, { opacity: 0, pointerEvents: "none" })
+      }
+    } else if (wasInfoOpenRef.current) {
+      if (view === "main") {
+        if (webglOk && mode === "overview" && galleryRef.current)
+          galleryRef.current.restoreFromInfo(restoreChrome)
+        else restoreChrome() // list / DOM fallback / missing ref — instant
+      }
+      // leaving to a project route: the main nav/footer unmounted with
+      // the view — a fresh pair renders there, nothing to restore
+    }
+    wasInfoOpenRef.current = infoOpen
+  }, [infoOpen])
 
   // ── Hover panel: stays mounted through its fade-out ─────────────────
   useEffect(() => {
@@ -878,81 +1064,263 @@ export default function App() {
     })
   }, [hoveredWP, panelWP])
 
-  // ── Intro: REAL loading progress ─────────────────────────────────────
-  // The counter/bar can never outrun the actual bytes: displayed % is
-  // clamped to (loaded thumbs / first-lap 36). The char animation keeps
-  // its choreography; the gate opens when both finish.
-  useEffect(() => {
-    if (view !== "preloader") return
+  // ── Intro: RP-style loading curtain ──────────────────────────────
+  // Real progress (first-lap thumbs, the exact photos the wall binds
+  // first) drives a mechanical odometer. When every byte is in AND the
+  // 0.8s legibility wait has elapsed: odometer settles → 0.25s hold →
+  // 0.45s curtain fade — off an ALREADY-LIVING wall (the gallery mounts
+  // at t=0 behind the opaque layer; this preload list shares the browser
+  // cache with its texture loads, zero double-fetching).
+  // LAYOUT effect on purpose: the chars' hidden initial state and the
+  // odometer's 000 position land before the first paint (zero flash), and
+  // gsap fully owns the transforms (no inline % to fight with).
+  useLayoutEffect(() => {
+    if (introDone) return
+
+    const reduced = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches
+    const t0 = performance.now()
+    const MIN_WAIT = 800 // RP shows the counter even on instant (cached) loads
+
+    // StrictMode double-run / unmount latch: image onloads keep firing
+    // after cleanup — without this, an orphaned milestone() would re-arm
+    // tweens+timers and fight the successor instance for the DOM.
+    let dead = false
+
+    let finishTimer = 0
+    const shown = { v: 0 }
+    let chipShown = false
+
+    const setV = (v: number) => {
+      if (dead) return
+      introOdomRef.current?.raw(v)
+      if (mobileCounterRef.current)
+        mobileCounterRef.current.textContent = `[${String(
+          Math.round(Math.min(100, Math.max(0, v))),
+        ).padStart(3, "0")}%]`
+    }
+    // one mechanical tween to the new milestone: small steps tick at
+    // 0.35s; a cached 0→100 jump becomes a single longer sweep
+    // (fast-forward smoothly, never skipped frames)
+    const tweenTo = (v: number): number => {
+      const delta = Math.abs(v - shown.v)
+      if (dead || reduced || delta === 0) {
+        shown.v = v
+        setV(v)
+        return 0
+      }
+      const dur = Math.min(0.35 + Math.max(0, delta - 8) * 0.005, 1.1)
+      gsap.killTweensOf(shown)
+      gsap.to(shown, {
+        v,
+        duration: dur,
+        ease: "power2.inOut",
+        onUpdate: () => setV(shown.v),
+      })
+      return dur
+    }
+
+    // curtain choreography (pre-paint: chars rise from below their line
+    // mask — SplitText hand-rolled, GSAP core only)
+    const ctx = gsap.context(() => {
+      if (reduced) {
+        gsap.set(".intro-logo", { opacity: 1 })
+        return
+      }
+      gsap.fromTo(
+        ".intro-title .intro-char",
+        { yPercent: 100, rotate: 7 },
+        {
+          yPercent: 0,
+          rotate: 0,
+          duration: 0.8,
+          ease: "power2.out",
+          stagger: 0.04,
+        },
+      )
+      // RP introText lines: pure VISIBILITY stagger (.045, delay .5 —
+      // no y movement), small uppercase lines above the title (C)
+      gsap.fromTo(
+        ".intro-sub .intro-char",
+        { visibility: "hidden" },
+        {
+          visibility: "visible",
+          stagger: 0.045,
+          delay: 0.5,
+          ease: "none",
+        },
+      )
+      gsap.fromTo(
+        ".intro-logo",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.4, ease: "power2.inOut" },
+      )
+    }, introRef)
+
+    // RP's beat (layout.js `f` timeline, decompiled): counter locks at
+    // 100 → loader TEXTS fade (delay .15, 0.7s power2.out) while the CHIP
+    // GLIDES to screen center (position:fixed, 0.7s power2.out, landing
+    // as a 150×150 square exactly where the WebGL stack is parked) —
+    // then the explode fires at the beat's end: introFlyIn + curtain
+    // unmount in the SAME frame (RP: setStarted(1) + loader.remove();
+    // the stack's top photo replaces the chip at the same spot).
+    let beatTimer = 0
+    let beatRaf = 0
+    let readyTimer = 0
+    const reveal = () => {
+      if (dead) return
+      // hand the engine the decoded bitmaps FIRST — pending wants are
+      // satisfied synchronously from them, so isBootReady() converges
+      // without a single network round trip
+      galleryRef.current?.setDecodedImages(imgMap)
+      // plan B (INTRO_EXPLODE=false): no beat, no explode — the wall has
+      // been laid out behind the curtain all along; just reveal it
+      if (!INTRO_EXPLODE) {
+        gsap.set(introRef.current, { display: "none" })
+        setIntroDone(true)
+        return
+      }
+      // RP <Suspense> parity: the beat must not launch until EVERY boot
+      // plane has its texture bound. The curtain's P≥1 only waited on
+      // Image() preloads — Safari's three-side TextureLoader loads can
+      // lag behind (Chrome shares the HTTP cache instantly, hiding the
+      // gap): straggler planes then flew the explode as empty quads and
+      // rebound mid-flight = the post-explode flicker. Poll briefly;
+      // 4s cap so a stuck texture can never hang the intro.
+      if (!galleryRef.current?.isBootReady()) {
+        if (performance.now() - t0 < 4000 + MIN_WAIT) {
+          readyTimer = window.setTimeout(reveal, 60)
+          return
+        } // else fall through — degrade rather than hang
+      }
+      const el = introRef.current
+      if (!el || reduced) {
+        setIntroDone(true)
+        return
+      }
+      // finish every pending GPU texture upload NOW — the cost lands
+      // inside the 1.3s still beat, so the explode flight never races a
+      // multi-ms texImage2D+mipmap stall (the curtain's P≥1 only waited
+      // on Image decodes; the THREE uploads were uncoordinated)
+      galleryRef.current?.flushTextures()
+      // targeted text fade (NOT the root — the chip must stay visible
+      // for its flight; the opaque curtain itself never fades)
+      gsap.to(
+        el.querySelectorAll(
+          ".intro-title, .intro-sub, .intro-odometer-wrap, .intro-mobile",
+        ),
+        { opacity: 0, duration: 0.7, ease: "power2.out", delay: 0.15 },
+      )
+      // chip → screen center (RP: `.to(j.children, {position:"fixed",
+      // height:"150px", x:"+="…, y:"+="…, .7s power2.out})` — gsap x/y
+      // are TRANSFORMS. The previous version animated left/top/width/
+      // height — LAYOUT properties: Safari re-runs layout+paint every
+      // frame of the flight (Chrome hides this cost). Size is set once
+      // at take-off (RP sets height inside the tween the same way);
+      // only x/y animate per frame.
+      const chip = chipRef.current
+      if (chip) {
+        const r = chip.getBoundingClientRect()
+        gsap.killTweensOf(chip)
+        gsap.set(chip, {
+          position: "fixed",
+          left: 0,
+          top: 0,
+          x: r.left,
+          y: r.top,
+          width: 150,
+          height: 150,
+          margin: 0,
+          marginBottom: 0,
+          opacity: 1, // even if its P≥.8 fade-in never fired
+        })
+        gsap.to(chip, {
+          x: window.innerWidth / 2 - 75,
+          y: window.innerHeight / 2 - 75,
+          duration: 0.7,
+          ease: "power2.out",
+          delay: 0.15,
+        })
+      }
+      // the explode fires at the beat's end: introFlyIn + curtain
+      // removal in the same frame
+      beatTimer = window.setTimeout(() => {
+        if (dead) return
+        // tween creation FIRST — the morph's take-off frame stays clean
+        galleryRef.current?.introFlyIn()
+        // Hide the curtain with ONE style write (display:none = RP's
+        // instant `loader.remove()` semantics; zero React work on the
+        // take-off frame — Safari stays smooth). The node itself stays
+        // React-owned: natively stealing it made React's commit crash
+        // with NotFoundError on removeChild (the 白屏 regression — RP
+        // can remove() because ITS loader is refs+vanilla, never React).
+        gsap.set(introRef.current, { display: "none" })
+        // React unmount deferred until the explode (1.4s) has fully
+        // landed — the commit's teardown cost lands when nobody is
+        // animating (imperceptible), not mid-flight (Safari stall)
+        beatRaf = window.setTimeout(() => {
+          if (!dead) setIntroDone(true)
+        }, 1600)
+      }, 1300)
+    }
+
+    const milestone = () => {
+      if (dead) return
+      const P = Math.min(1, loadState.loaded / firstLap.length)
+      const settle = tweenTo(P * 100)
+      if (!chipShown && P >= 0.8) {
+        chipShown = true
+        if (chipRef.current)
+          gsap.to(chipRef.current, {
+            opacity: 1,
+            duration: reduced ? 0 : 0.4,
+            ease: "power2.inOut",
+          })
+      }
+      if (P >= 1) {
+        // settle (0.35s tick) → 0.25s hold → fade, never sooner than the
+        // minimum legibility wait (settle is in gsap SECONDS — ms here)
+        const minLeft = Math.max(0, MIN_WAIT - (performance.now() - t0))
+        finishTimer = window.setTimeout(reveal, minLeft + settle * 1000 + 250)
+      }
+    }
 
     // first lap of the wall — the exact photos the gallery binds first
-    // (same seed as WebGLGallery lap 0 → zero double-loading)
-    // preload only what THIS device's wall shows first (2-col phones: 18,
-    // 3-col tablets: 27, desktop: 36). Waiting for all 36 on a phone stalled
-    // the counter at ~50% for seconds on cellular/WeChat webview.
+    // (same seed as WebGLGallery lap 0 → shared cache, zero double-loading)
+    // preload only what THIS device's wall shows first (2-col phones: 20,
+    // 3-col tablets: 28, desktop: 36).
     const vw0 = window.innerWidth
     const preloadN = vw0 < 640 ? 20 : vw0 < 1140 ? 28 : 36
     const firstLap = shuffled(WALL, WALL_SEED).slice(0, preloadN)
     const loadState = { loaded: 0 }
+    // decoded intro images, handed to the engine so boot-lap textures are
+    // built from the SAME bitmaps the counter waited on (no second fetch;
+    // Safari's three side can never lag the preloader again)
+    const imgMap = new Map<string, HTMLImageElement>()
     firstLap.forEach((wp) => {
       const img = new Image()
       const done = () => {
+        imgMap.set(wp.photo.thumb, img)
         loadState.loaded++
+        milestone()
       }
       img.onload = done
       img.onerror = done
       img.src = wp.photo.thumb
     })
+    milestone() // paint the initial 000 state (cached hits arrive async)
 
-    let finishTimer = 0
-    let poller = 0
-    const ctx = gsap.context(() => {
-      const prog = { shown: 0 }
-      gsap.to(prog, {
-        shown: 100,
-        duration: 2.8,
-        ease: "power2.inOut",
-        onUpdate: () => {
-          const real = (loadState.loaded / firstLap.length) * 100
-          const v = Math.min(prog.shown, real)
-          if (counterRef.current)
-            counterRef.current.textContent = `${String(Math.round(v)).padStart(3, "0")}%`
-          if (barRef.current)
-            barRef.current.style.transform = `scaleX(${v / 100})`
-        },
-        onComplete: () => {
-          const finish = () => {
-            finishTimer = window.setTimeout(() => setIntroDone(true), 350)
-          }
-          if (loadState.loaded >= firstLap.length) finish()
-          else
-            poller = window.setInterval(() => {
-              if (loadState.loaded >= firstLap.length) {
-                window.clearInterval(poller)
-                // push the counter to the real 100 before leaving
-                if (counterRef.current) counterRef.current.textContent = "100%"
-                if (barRef.current)
-                  barRef.current.style.transform = "scaleX(1)"
-                finish()
-              }
-            }, 80)
-        },
-      })
-      gsap.from(".intro-char", {
-        yPercent: 100,
-        rotate: 7,
-        duration: 0.7,
-        ease: "power2.inOut",
-        stagger: 0.03,
-        delay: 0.05,
-      })
-    }, preloaderRef)
     return () => {
+      dead = true
       window.clearTimeout(finishTimer)
-      window.clearInterval(poller)
+      window.clearTimeout(beatTimer)
+      window.clearTimeout(readyTimer)
+      window.clearTimeout(beatRaf) // (now a timeout — defers the React unmount)
+      gsap.killTweensOf(shown)
       ctx.revert()
     }
-  }, [view])
+  }, [introDone])
 
   // ── Project: per-image fade/scale + scrubbed odometer ────────────────
   useEffect(() => {
@@ -972,21 +1340,17 @@ export default function App() {
 
     const ctx = gsap.context(() => {
       gsap.utils.toArray<HTMLElement>(".project-img").forEach((img) => {
-        gsap.fromTo(
-          img,
-          { opacity: 0, scale: 1.08 },
-          {
-            opacity: 1,
-            scale: 1,
-            duration: 0.9,
-            ease: "power2.inOut",
-            scrollTrigger: {
-              trigger: img,
-              start: "top 80%",
-              toggleActions: "play none none reverse",
-            },
+        gsap.fromTo(img, { opacity: 0, scale: 1.08 }, {
+          opacity: 1,
+          scale: 1,
+          duration: 0.9,
+          ease: "power2.inOut",
+          scrollTrigger: {
+            trigger: img,
+            start: "top 80%",
+            toggleActions: "play none none reverse",
           },
-        )
+        })
       })
       ScrollTrigger.create({
         trigger: projectRef.current,
@@ -1014,10 +1378,7 @@ export default function App() {
   // hash → scroll: tick clicks / back / forward land on the routed photo
   useEffect(() => {
     if (view !== "project" || !projectSeries || !projectImages.length) return
-    const idx = Math.min(
-      Math.max(0, route.photo - 1),
-      projectImages.length - 1,
-    )
+    const idx = Math.min(Math.max(0, route.photo - 1), projectImages.length - 1)
     if (idx !== projectIdxRef.current) {
       projectIdxRef.current = idx
       setProjectIndex(idx)
@@ -1029,20 +1390,14 @@ export default function App() {
     setHoveredWP(null)
     nav(`#/p/${wp.series.slug}/${wp.index + 1}`)
   }
-  function openSeries(series: Series) {
-    setHoveredWP(null)
-    nav(`#/p/${series.slug}`)
-  }
   function closeProject() {
-    const cat = route.cat === "all" ? "" : `${route.cat}/`
-    nav(lastMainModeRef.current === "list" ? `#/${cat}list` : `#/${cat || ""}`)
+    nav(mainHref(route.cat, lastMainModeRef.current))
   }
   function goToProjectImage(i: number) {
     if (projectSeries) nav(`#/p/${projectSeries.slug}/${i + 1}`)
   }
   function pickCat(c: CatFilter) {
-    const base = c === "all" ? "" : `/${c}`
-    nav(mode === "list" ? `#${base}/list`.replace("//", "/") : `#${base || "/"}`)
+    nav(mainHref(c, mode))
   }
 
   return (
@@ -1053,12 +1408,6 @@ export default function App() {
         minHeight: "100vh",
       }}
     >
-      <style>{`
-        .nav-center { display: flex !important; }
-        @media (max-width: 1139px) { .nav-center { display: none !important; } }
-        @media (max-width: 639px) { .nav-mail { display: none !important; } }
-      `}</style>
-
       <div
         style={{
           position: "fixed",
@@ -1074,101 +1423,158 @@ export default function App() {
 
       <Cursor />
 
-      {/* ── PRELOADER ─────────────────────────────────────────────────── */}
-      {view === "preloader" && (
+      {/* ── INTRO · RP loading curtain ─────────────────────────────── */}
+      {!introDone && (
         <div
-          ref={preloaderRef}
+          ref={introRef}
+          className="intro-curtain"
           style={{
             position: "fixed",
             inset: 0,
+            // OPAQUE (reverted): RP's introWrapper has a solid bg — the
+            // nav/footer text must NOT bleed through during load (the
+            // transparent experiment showed them static and uninvited).
+            // The center photo during the beat is the DOM chip's flight,
+            // not the WebGL stack peeking through (RP: same — the WebGL
+            // stack only appears at the explode frame).
             background: bg,
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "flex-end",
-            padding: "0 20px 36px",
+            zIndex: 99999999999,
+            pointerEvents: "none",
+            overflow: "hidden",
           }}
         >
+          {/* desktop ≥601px — title bottom-left, odometer bottom-right */}
           <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "flex-end",
-            }}
-          >
-            <div>
-              <div style={{ marginBottom: 4 }}>
-                <Chars
-                  text="SPIKE HU"
-                  charStyle={{
-                    ...MONO,
-                    fontSize: 11,
-                    color: fg,
-                    opacity: 0.44,
-                  }}
-                />
-              </div>
-              <div style={{ marginBottom: 4, whiteSpace: "nowrap" }}>
-                <Chars
-                  text="STREET / SCENERY / LIVE"
-                  charStyle={{
-                    ...MONO,
-                    fontSize: 11,
-                    color: fg,
-                    opacity: 0.44,
-                  }}
-                />
-              </div>
-              <div style={{ marginBottom: 14, whiteSpace: "nowrap" }}>
-                <Chars
-                  text="PHOTOGRAPHY / FOLIO '26"
-                  charStyle={{
-                    ...MONO,
-                    fontSize: 11,
-                    color: fg,
-                    opacity: 0.44,
-                  }}
-                />
-              </div>
-              <div style={{ overflow: "hidden" }}>
-                <Chars
-                  text="SPIKE HU /"
-                  charStyle={{
-                    ...DISPLAY,
-                    fontSize: "clamp(36px, 6.8vw, 98px)",
-                    lineHeight: 0.9,
-                    color: fg,
-                  }}
-                />
-              </div>
-            </div>
-            <div
-              ref={counterRef}
-              style={{
-                ...DISPLAY,
-                fontSize: "clamp(40px, 6.6vw, 95px)",
-                lineHeight: 1,
-                color: fg,
-                fontVariantNumeric: "tabular-nums",
-                textAlign: "right",
-              }}
-            >
-              000%
-            </div>
-          </div>
-          <div
-            ref={barRef}
+            className="intro-desktop"
             style={{
               position: "absolute",
-              bottom: 0,
-              left: 0,
-              width: "100%",
-              height: 1,
-              background: fg,
-              opacity: 0.22,
-              transform: "scaleX(0)",
-              transformOrigin: "left center",
+              inset: 0,
+              alignItems: "flex-end",
+              justifyContent: "space-between",
+              gap: 24,
+              padding: "0 20px 36px",
             }}
-          />
+          >
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: 14,
+                minWidth: 0,
+              }}
+            >
+              {/* RP introText (layout.js): small uppercase lines above the
+                title, chars revealed by pure visibility stagger (.045,
+                delay .5 — no y movement) — added per user request (C) */}
+              <div className="intro-sub">
+                <Chars
+                  text="STREET — SCENERY — LIVE"
+                  charStyle={{
+                    ...DISPLAY,
+                    fontSize: "clamp(11px, 1.1vw, 14px)",
+                    letterSpacing: "0.14em",
+                    lineHeight: 1.4,
+                    color: fg,
+                  }}
+                />
+                <Chars
+                  text="PHOTOGRAPHY PORTFOLIO 2026"
+                  charStyle={{
+                    ...DISPLAY,
+                    fontSize: "clamp(11px, 1.1vw, 14px)",
+                    letterSpacing: "0.14em",
+                    lineHeight: 1.4,
+                    color: fg,
+                  }}
+                />
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-end",
+                  gap: 18,
+                }}
+              >
+                <div className="intro-title" style={{ overflow: "hidden" }}>
+                  <Chars
+                    text="SPIKE HU /"
+                    charStyle={{
+                      ...DISPLAY,
+                      fontSize: "clamp(40px, 6.4vw, 96px)",
+                      lineHeight: 0.9,
+                      color: fg,
+                    }}
+                  />
+                </div>
+                {/* RP photo chip — first BEIJING thumb, wakes up late; the
+                  beat flies it to screen center (RP's intro_richard.jpeg
+                  position:fixed glide — the 顿感's focus point) */}
+                <img
+                  ref={chipRef}
+                  src={HERO_CHIP}
+                  alt=""
+                  style={{
+                    width: 150,
+                    height: 45,
+                    objectFit: "cover",
+                    display: "block",
+                    opacity: 0.009,
+                    marginBottom: 8,
+                  }}
+                />
+              </div>
+            </div>
+            <div className="intro-odometer-wrap">
+              <IntroOdometer
+                ref={introOdomRef}
+                digitStyle={{
+                  ...DISPLAY,
+                  fontSize: "clamp(56px, 6.6vw, 92px)",
+                  color: fg,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* mobile ≤600px — centered logo mark, text counter */}
+          <div
+            className="intro-mobile"
+            style={{
+              position: "absolute",
+              inset: 0,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <div
+              className="intro-logo"
+              style={{
+                ...DISPLAY,
+                fontSize: 18,
+                letterSpacing: "0.3em",
+                color: fg,
+                opacity: 0,
+              }}
+            >
+              SPIKE HU
+            </div>
+            <div
+              ref={mobileCounterRef}
+              style={{
+                position: "absolute",
+                bottom: 36,
+                right: 20,
+                ...MONO,
+                fontSize: 12,
+                color: fg,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              [000%]
+            </div>
+          </div>
         </div>
       )}
 
@@ -1176,6 +1582,7 @@ export default function App() {
       {view === "main" && (
         <>
           <NavBar
+            headerRef={navRef}
             isDark={isDark}
             fg={fg}
             mode={mode}
@@ -1213,20 +1620,25 @@ export default function App() {
             }}
           />
 
-          {/* Gallery stays mounted for the whole main view; `active` fades it
-              out/in (canvas + spacer) when switching to list/info. */}
+          {/* Gallery stays mounted for the whole main view — overview AND
+              list now (the filmstrip is in-canvas). `active` is false only
+              for project/info; list↔overview mode flips trigger the RP view
+              transition inside the gallery. */}
           {webglOk ? (
             <WebGLGallery
-              active={mode === "overview" && !infoOpen}
+              ref={galleryRef}
+              active={view === "main" && !infoOpen}
+              infoOpen={infoOpen}
+              listMode={mode === "list"}
               pool={pool}
-              getScroll={getScroll}
               isDark={isDark}
               onHover={setHoveredWP}
               onSeq={(n) => footerOdomRef.current?.to(n)}
               onResetScroll={() => {
-                // animated glide (not a jump) — the wall keeps dissolving
-                // softly while it slides back to the top
-                lenisRef.current?.scrollTo(0, { duration: 0.9 })
+                // the wall already reset its own virtual position to top
+                // (instant, at re-seed) — sync the window scroll to match
+                // (page is locked; zero visual impact) + odometer back to 1
+                lenisRef.current?.scrollTo(0, { immediate: true })
                 footerOdomRef.current?.to(1)
               }}
               onPick={openProject}
@@ -1234,7 +1646,7 @@ export default function App() {
           ) : (
             /* DOM masonry fallback (no WebGL / reduced motion) */
             <Transition
-              show={mode === "overview" && !infoOpen}
+              show={(mode === "overview" || mode === "list") && !infoOpen}
               enter={masonryEnter}
               exit={masonryExit}
             >
@@ -1289,103 +1701,16 @@ export default function App() {
             </Transition>
           )}
 
-          <Transition show={mode === "list"} enter={listEnter} exit={listExit}>
-            <div
-              className="list-stage"
-              style={{
-                position: "fixed",
-                top: 60,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                display: "flex",
-                alignItems: "center",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                data-lenis-prevent
-                style={{
-                  display: "flex",
-                  gap: 28,
-                  padding: "0 clamp(20px, 4vw, 40px)",
-                  overflowX: "auto",
-                  height: "52vh",
-                }}
-                onMouseLeave={() => setHoveredWP(null)}
-              >
-                {SERIES.map((s) => {
-                  const cover = coverOf(s)
-                  const coverWP: WallPhoto = { series: s, index: 0, photo: cover }
-                  return (
-                    <div
-                      data-cursor
-                      className="list-card"
-                      key={s.slug}
-                      style={{
-                        flexShrink: 0,
-                        height: "100%",
-                        aspectRatio: "3 / 2",
-                        overflow: "hidden",
-                        cursor: "pointer",
-                        background: "var(--bg-soft)",
-                        position: "relative",
-                      }}
-                      onMouseEnter={() => setHoveredWP(coverWP)}
-                      onClick={() => openSeries(s)}
-                    >
-                      <img
-                        src={cover.thumb}
-                        alt={s.name}
-                        loading="lazy"
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          objectFit: "cover",
-                          display: "block",
-                        }}
-                      />
-                      <div
-                        style={{
-                          position: "absolute",
-                          bottom: 8,
-                          left: 10,
-                          ...MONO,
-                          fontSize: 9,
-                          color: "#FEFEFE",
-                        }}
-                      >
-                        {String(seriesNumber(s)).padStart(2, "0")}
-                      </div>
-                      <div
-                        style={{
-                          position: "absolute",
-                          bottom: 8,
-                          right: 10,
-                          ...MONO,
-                          fontSize: 9,
-                          color: "#FEFEFE",
-                        }}
-                      >
-                        {s.name}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </Transition>
-
           {/* ── Footer ───────────────────────────────────────────────── */}
           <footer
+            ref={footerRef}
             style={{
               position: "fixed",
               bottom: 0,
               left: 0,
               right: 0,
               zIndex: 400,
-              padding:
-                "0 20px calc(18px + env(safe-area-inset-bottom, 0px))",
+              padding: "0 20px calc(18px + env(safe-area-inset-bottom, 0px))",
             }}
           >
             <div
@@ -1408,7 +1733,21 @@ export default function App() {
               >
                 ©2026
               </span>
-              <FilterWords cat={route.cat} fg={fg} onPick={pickCat} />
+              {/* RP: the giant filter words live in LIST only — fade in
+                  at the overview→list transition midpoint, out on exit */}
+              <div
+                ref={wordsRef}
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  bottom: 6,
+                  opacity: 0,
+                  pointerEvents: "none",
+                }}
+              >
+                <FilterWords cat={route.cat} fg={fg} onPick={pickCat} />
+              </div>
               <span
                 style={{
                   ...MONO,
@@ -1478,17 +1817,7 @@ export default function App() {
                 </div>
                 <button
                   className="info-block"
-                  onClick={() => {
-                    const base =
-                      route.cat === "all"
-                        ? mode === "list"
-                          ? "#/list"
-                          : "#/"
-                        : mode === "list"
-                          ? `#/${route.cat}/list`
-                          : `#/${route.cat}`
-                    nav(base)
-                  }}
+                  onClick={() => nav(mainHref(route.cat, mode))}
                   style={{
                     ...MONO,
                     fontSize: 11,
@@ -1506,7 +1835,8 @@ export default function App() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(min(320px, 100%), 1fr))",
+                  gridTemplateColumns:
+                    "repeat(auto-fit, minmax(min(320px, 100%), 1fr))",
                   gap: 48,
                   maxWidth: 860,
                 }}
@@ -1674,14 +2004,12 @@ export default function App() {
             onToggleTheme={toggleTheme}
           />
           <div style={{ position: "fixed", top: 76, left: 20, zIndex: 500 }}>
-            {(
-              [
-                ["SERIES", projectSeries.name],
-                ["CATEGORY", projectSeries.category.toUpperCase()],
-                ["YEAR", String(projectSeries.year)],
-                ["PHOTOS", String(projectSeries.photos.length)],
-              ] as [string, string][]
-            ).map(([k, v]) => (
+            {([
+              ["SERIES", projectSeries.name],
+              ["CATEGORY", projectSeries.category.toUpperCase()],
+              ["YEAR", String(projectSeries.year)],
+              ["PHOTOS", String(projectSeries.photos.length)],
+            ] as [string, string][]).map(([k, v]) => (
               <div
                 key={k}
                 style={{ display: "flex", gap: 14, marginBottom: 3 }}

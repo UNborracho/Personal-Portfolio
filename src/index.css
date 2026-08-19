@@ -121,3 +121,34 @@ html.cursor-none * {
   background: transparent;
   border: 1.5px solid #fff;
 }
+
+/* ── App chrome visibility rules (moved out of a JSX <style> block per
+   AGENTS.md: global CSS belongs in index.css) ─────────────────────── */
+.nav-center {
+  display: flex !important;
+}
+@media (max-width: 1139px) {
+  .nav-center {
+    display: none !important;
+  }
+}
+@media (max-width: 639px) {
+  .nav-mail {
+    display: none !important;
+  }
+}
+/* RP intro: desktop odometer layout vs mobile logo+text counter */
+.intro-desktop {
+  display: flex;
+}
+.intro-mobile {
+  display: none;
+}
+@media (max-width: 600px) {
+  .intro-desktop {
+    display: none;
+  }
+  .intro-mobile {
+    display: flex;
+  }
+}
