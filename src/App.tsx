@@ -14,6 +14,7 @@ import { ScrollTrigger } from "gsap/ScrollTrigger"
 import WebGLGallery, {
   WALL_SEED,
   INTRO_EXPLODE,
+  bootFlags,
   type GalleryHandle,
 } from "./WebGLGallery"
 import Cursor from "./Cursor"
@@ -887,6 +888,7 @@ export default function App() {
   const wordsRef = useRef<HTMLDivElement>(null)
   const galleryRef = useRef<GalleryHandle>(null)
   const wasInfoOpenRef = useRef(false)
+  const infoLayerRef = useRef<HTMLDivElement | null>(null)
 
   // ── Route → view state ─────────────────────────────────────────────
   // The hash is the single source of truth from t=0 — the intro is a pure
@@ -1000,14 +1002,16 @@ export default function App() {
     }
   }, [mode])
 
-  // ── RP info transition (hard cut in · glide-then-pop out) ───────────
+  // ── RP info transition (hard cut in · fade-then-fly out) ───────
   // Enter #/info: canvas (gallery, via its infoOpen prop), nav and footer
   // all go opacity:0 in the same instant — RP gsap.set(..., { opacity: 0,
   // duration: 0 }): a hard cut, not a fade. Layout effect → lands in the
-  // route change's first paint. Exit: overview waits for the wall's 1.4s
-  // power2.inOut glide back to top (gallery.restoreFromInfo), then all
-  // three pop together via restoreChrome; list (and the DOM fallback)
-  // restores immediately — no wall to glide.
+  // route change's first paint. Exit: the [CLOSE] button first fades the
+  // info layer itself (RP layout.js @29048: contact 1s power4.out, 0.5s
+  // <800px — the route pops in the fade's onComplete), THEN this effect
+  // runs restoreFromInfo: the wall re-enters from the return park
+  // (+1.2vw → enter-only fly-in, RP home-remount) with canvas/nav/footer
+  // popping the instant the flight begins.
   const restoreChrome = useCallback(() => {
     const els = [navRef.current, footerRef.current].filter(
       (el): el is HTMLElement => !!el,
@@ -1033,9 +1037,12 @@ export default function App() {
       }
     } else if (wasInfoOpenRef.current) {
       if (view === "main") {
-        if (webglOk && mode === "overview" && galleryRef.current)
+        // re-enter the wall from the return park — BOTH modes now (the
+        // info layer has already faded itself out on the click path; on
+        // a hash-back close the layer's own exit fade runs concurrently)
+        if (webglOk && galleryRef.current)
           galleryRef.current.restoreFromInfo(restoreChrome)
-        else restoreChrome() // list / DOM fallback / missing ref — instant
+        else restoreChrome() // DOM fallback / missing ref — instant
       }
       // leaving to a project route: the main nav/footer unmounted with
       // the view — a fresh pair renders there, nothing to restore
@@ -1247,6 +1254,9 @@ export default function App() {
       // removal in the same frame
       beatTimer = window.setTimeout(() => {
         if (dead) return
+        // the curtain has flown — later gallery remounts (project close)
+        // must take the RETURN-VISIT path, never the first-load stack
+        bootFlags.curtainFlown = true
         // tween creation FIRST — the morph's take-off frame stays clean
         galleryRef.current?.introFlyIn()
         // Hide the curtain with ONE style write (display:none = RP's
@@ -1773,6 +1783,7 @@ export default function App() {
           {/* ── INFO overlay ──────────────────────────────────────────── */}
           <Transition show={infoOpen} enter={infoEnter} exit={infoExit}>
             <div
+              ref={infoLayerRef}
               data-lenis-prevent
               style={{
                 position: "fixed",
@@ -1817,7 +1828,24 @@ export default function App() {
                 </div>
                 <button
                   className="info-block"
-                  onClick={() => nav(mainHref(route.cat, mode))}
+                  onClick={() => {
+                    // RP contact close (layout.js @29048): the contact page
+                    // fades ITSELF out — 1s power4.out (0.5s <800px) — and
+                    // the route pops in the fade's onComplete. The wall's
+                    // return-park fly-in then follows via restoreFromInfo.
+                    const el = infoLayerRef.current
+                    if (!el) {
+                      nav(mainHref(route.cat, mode))
+                      return
+                    }
+                    gsap.killTweensOf(el)
+                    gsap.to(el, {
+                      opacity: 0,
+                      duration: window.innerWidth >= 800 ? 1 : 0.5,
+                      ease: "power4.out",
+                      onComplete: () => nav(mainHref(route.cat, mode)),
+                    })
+                  }}
                   style={{
                     ...MONO,
                     fontSize: 11,

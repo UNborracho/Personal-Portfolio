@@ -30,12 +30,21 @@ export const WALL_SEED = 20260815
 // non-home-route form). One-line kill switch if the explode ever acts up.
 export const INTRO_EXPLODE = true
 
+// Module scope on purpose: survives gallery remounts (project routes
+// unmount the whole main block). RP's `started` state parity — the
+// loading curtain runs ONCE per page load, so a remounted gallery must
+// take the RETURN-VISIT boot path, never the first-load stack park.
+// Set by App at the intro beat (and inside introFlyImpl) — even when
+// the gallery is unmounted at that moment (reload straight into #/p/…).
+export const bootFlags = { curtainFlown: false }
+
 export interface GalleryHandle {
-  /** RP info-exit restore (invoked by App when #/info closes back to the
-   *  overview: glide the hidden wall back to top (1.4s power2.inOut —
-   *  the same tween as the category switch), then HARD-show the canvas
-   *  (opacity 1, duration 0 — no fade) and call onRestored so App pops
-   *  nav/footer back in the same instant. Already at top (<1px) → instant. */
+  /** RP info-exit re-enter (invoked by App when #/info closes): the
+   *  info layer has already faded itself out (1s power4.out — RP's
+   *  contact close). Teleport the hidden wall to top, park every plane
+   *  at the return park (+1.2vw overview / +vw list), run the
+   *  enter-only one-clock morph, and pop the canvas + chrome the
+   *  instant the flight begins (RP home-remount semantics). */
   restoreFromInfo: (onRestored?: () => void) => void
   /** Feed the engine the ALREADY-DECODED intro images (thumb → <img>).
    *  Textures for the boot lap are built from THESE elements — no second
@@ -43,11 +52,12 @@ export interface GalleryHandle {
    *  preloader (Safari straggler class eliminated at the root). */
   setDecodedImages: (imgs: Map<string, HTMLImageElement>) => void
   /** RP intro entrance (decompiled lazy816.js boot + `l` timeline):
-   *  park every photo at +1.2×viewport right (the boot park) and fly
-   *  the whole wall in on RP's one clock (position 1.4s power3.inOut,
-   *  chained scale/uResolution), with the hero photo's liquid wobble
-   *  (uAnim 0→.9→0, .45s sine.inOut ramps). Invoked by App when the
-   *  loading curtain starts to clear — flight and curtain-fade run
+   *  the boot parked every photo dead-center as a 150px stack (parkStack)
+   *  — the stack now EXPLODES outward into the lattice on RP's one clock
+   *  (position 1.4s power3.inOut, sequential pop hero-first, 0.05s
+   *  stagger, chained scale/uResolution), with the hero photo's liquid
+   *  wobble (uAnim 0→.9→0, .45s sine.inOut ramps). Invoked by App when
+   *  the loading curtain starts to clear — flight and curtain-fade run
    *  concurrently, exactly like richardprescott.com's load. */
   introFlyIn: () => void
   /** Synchronously finish every pending GPU texture upload (initTexture)
@@ -75,7 +85,9 @@ interface Props {
   infoOpen: boolean
   // layout mode: false = vertical conveyor (overview), true = horizontal
   // filmstrip row (list). Mode flips while active trigger the RP view
-  // transition (ripple → fly-out → fly-in from alternating edges).
+  // transition (ONE clock: exits fly to the nearest edge immediately,
+  // entrants revive at the right-edge park and fly in — see
+  // startViewTransition).
   listMode: boolean
   // filtered photo pool for the current category (identity changes on cat
   // switch → the conveyor re-seeds without touching the WebGL context)
@@ -139,7 +151,7 @@ function ncolsFor(vw: number) {
   return vw < 640 ? 2 : vw < 1140 ? 3 : 4
 }
 
-function computeLayout(vw: number, vh: number, _minAr: number): Layout {
+function computeLayout(vw: number, vh: number): Layout {
   const ncols = ncolsFor(vw)
   // unit ≈ average photo width → ~4.2 slots per row desktop (RP mix);
   // PHOTO_SCALE shrinks photos ~20% → more slots per row (denser, fuller)
@@ -253,7 +265,7 @@ function WebGLGallery(
   const listModeRef = useRef(listMode)
   listModeRef.current = listMode
   const layoutRef = useRef<Layout>(
-    computeLayout(window.innerWidth, window.innerHeight, 1),
+    computeLayout(window.innerWidth, window.innerHeight),
   )
   const [cycleH, setCycleH] = useState(() => layoutRef.current.cycleH)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
@@ -556,7 +568,8 @@ function WebGLGallery(
             "#include <map_fragment>",
             // r185 map_fragment restructured: CoverUV + ±45°/-135°
             // displacement samples crossfaded by uHover (RP liquid
-            // hover; amplitude 0.4 and the two rotations are RP
+            // hover; amplitude 0.6 = RP's 0.4 × 1.5 — user-directed
+            // strengthening 2026-08-20; the two rotations are RP
             // constants). RP semantics: pos1 ramps WITH uHover, pos2
             // ramps with (1 - uHover) and the mix crossfades — at BOTH
             // endpoints the SHOWN sample is undistorted, so the liquid
@@ -569,8 +582,8 @@ function WebGLGallery(
               vec4 sampledDiffuseColor = vec4( 0.0 );
               vec2 cuv = coverUv( vMapUv, uResolution, uImageRes );
               vec2 disp = texture2D( uDispMap, cuv ).rg;
-              vec2 pos1 = cuv + rot2( PI * 0.25 ) * disp * 0.4 * uHover;
-              vec2 pos2 = cuv + rot2( -PI * 0.75 ) * disp * 0.4 * ( 1.0 - uHover );
+              vec2 pos1 = cuv + rot2( PI * 0.25 ) * disp * 0.6 * uHover;
+              vec2 pos2 = cuv + rot2( -PI * 0.75 ) * disp * 0.6 * ( 1.0 - uHover );
               sampledDiffuseColor = mix( texture2D( map, pos1 ), texture2D( map, pos2 ), uHover );
               #ifdef DECODE_VIDEO_TEXTURE
                 sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
@@ -913,7 +926,6 @@ function WebGLGallery(
         // rebinds onscreen, the photo morphs softly instead of flashing
         // (the 残影 bug class). Invisible in the choreographed paths:
         // those rebind offscreen, where a 0.15s fade is imperceptible.
-        const from = mat.opacity
         gsap.killTweensOf(mat)
         mat.transparent = true
         mat.opacity = 0
@@ -927,7 +939,6 @@ function WebGLGallery(
             transitioning--
           },
         })
-        void from
       } else {
         gsap.killTweensOf(mat)
         mat.transparent = false
@@ -942,13 +953,9 @@ function WebGLGallery(
         killRequeue()
         seedRow()
       }
-      const minAr =
-        poolArr.length > 0
-          ? Math.min(...poolArr.map((p) => p.photo.w / p.photo.h))
-          : 1
       const changed = ncolsFor(w) !== lastNcols
       lastNcols = ncolsFor(w)
-      layoutRef.current = computeLayout(w, h, minAr)
+      layoutRef.current = computeLayout(w, h)
       setCycleH(layoutRef.current.cycleH)
       // curtain bend math is normalized by the viewport size in world units
       shared.uViewport.value.x = w
@@ -1011,6 +1018,31 @@ function WebGLGallery(
       bootParked = true
     }
 
+    // RP return-mount park (lazy816.js @14393, started!=0 branch):
+    // every plane parks at +1.2×viewport RIGHT (offscreen) — the
+    // activation edge then flies the lattice in on the enter-only one
+    // clock. Parks at the slot's OWN size (bindPlane already set ar):
+    // the morph then flies position only. bootParked gates the tick
+    // until the transition takes over, exactly like the intro stack.
+    const parkReturnMount = () => {
+      const L = layoutRef.current
+      for (let i = 0; i < L.count; i++) {
+        const m = planes[i]
+        if (!m.visible) continue
+        const sl = L.slots[i]
+        const arv = m.userData.ar as number
+        const w = boundW(sl.w, arv, L.pitch)
+        m.position.set(1.2 * window.innerWidth, 0, 0)
+        m.scale.set(w, w / arv, 1)
+        const unis = unisOf(m)
+        unis.uResolution.value.x = w
+        unis.uResolution.value.y = w / arv
+        m.userData.lastX = NaN
+        m.userData.lastY = NaN
+      }
+      bootParked = true
+    }
+
     const seedPool = () => {
       killTransition()
       viewTrans?.kill()
@@ -1033,11 +1065,19 @@ function WebGLGallery(
         m.userData.inRow = false
         m.userData.rowIdx = undefined
       })
-      // desktop overview boot: park the fresh wall as the center stack
-      // (RP loads with every photo stacked center — the intro reveal
-      // then explodes it into the lattice). Re-parks on a rare intro-time
-      // pool change too (photos swap under the stack, invisible)
-      if (INTRO_EXPLODE && !introFlown && !listModeRef.current) parkStack()
+      // desktop overview boot: first load parks the center stack (the
+      // intro reveal explodes it); a REMOUNT (project close / reload
+      // into #/p/…) takes RP's return-visit branch instead — park at
+      // +1.2vw right and let the activation edge fly the wall in. The
+      // curtain only fires once per page load (bootFlags, module scope).
+      if (INTRO_EXPLODE && !introFlown && !listModeRef.current) {
+        if (bootFlags.curtainFlown) {
+          parkReturnMount()
+          pendingOverviewEnter = true
+        } else {
+          parkStack()
+        }
+      }
       prefetch()
       cbRef.current.onSeq(1)
       cbRef.current.onResetScroll?.()
@@ -1179,7 +1219,6 @@ function WebGLGallery(
         0,
         Math.max(0, open.length - carriers.length),
       )
-      const leavers = nonSurvivors.slice(rePurposed.length) // (typing only — the exit loop below iterates nonSurvivors directly)
       open.forEach(({ ti }, k) => {
         const m = carriers[k] ?? rePurposed[k - carriers.length]
         if (m) newRoster[ti] = m
@@ -1542,13 +1581,13 @@ function WebGLGallery(
     // RP view-transition state (overview ↔ list). While non-null, GSAP owns
     // plane transforms and the tick loop stands aside (positions, wrap,
     // hover); input is dead. Declared here so early fns (seedRow) can kill.
-    let viewTrans: { kill: () => void; phase: () => string } | null = null
-    let vtPhase = ""
+    let viewTrans: { kill: () => void } | null = null
     // idle z-wave gate (RP uProgress semantics): 1 = wave ON in list
     // (uProgress 0), 0 = flat overview (uProgress .2). Toggled 1s linear
     // at view edges by startViewTransition; the tick multiplies it in.
     const breathState = { v: 0 } // site boots into overview = flat
     let pendingListEnter = false // mount-into-list fly-in (see seedRow)
+    let pendingOverviewEnter = false // remount fly-in (see seedPool)
     let jTimer = 0 // 150ms quiet → jRaw = 0
     let resetTween: gsap.core.Tween | null = null
     let lastT = performance.now()
@@ -1580,29 +1619,36 @@ function WebGLGallery(
         },
       })
     }
-    // ── info-exit restore (App-invoked via the imperative handle) ────
-    // The wall is hidden at this point (info enter hard-cut it). If the
-    // user had scrolled, glide wallY back to 0 (reusing startResetGlide)
-    // and ONLY THEN hard-show the canvas + notify App, so canvas/nav/
-    // footer all pop in the same instant (RP: visibility restored after
-    // the scrollTo completes). Already at top (<1px) → instant restore.
+    // ── info-exit re-enter (App-invoked via the imperative handle) ────
+    // RP contact close (layout.js @29048, decompiled): the contact page
+    // itself fades 1s power4.out (0.5s <800px) and ONLY THEN the route
+    // pops — home remounts FRESH: scroll resets instantly (no glide) and
+    // every plane, parked at the return park, flies back into the wall
+    // (the return-visit activation entrance). Overlay parity: the canvas
+    // is still hidden, so teleport wallY/wallX to top, park every visible
+    // plane at the return park, run the enter-only morph, and pop the
+    // canvas the instant the flight begins (RP's fresh home renders the
+    // canvas+nav+footer at full opacity with the wall still offscreen).
     restoreImplRef.current = (onRestored?: () => void) => {
       gsap.killTweensOf(canvas)
       gsap.set(canvas, { opacity: 0, pointerEvents: "none" })
-      const finish = () => {
-        hiddenGlideRef.current = false
-        infoCanvasRef.current = false
-        gsap.killTweensOf(canvas)
-        gsap.set(canvas, { opacity: 1, pointerEvents: "auto" })
-        onRestored?.()
+      hiddenGlideRef.current = false
+      infoCanvasRef.current = false
+      wallY = 0
+      wallX = 0
+      killResetTween()
+      const lm = listModeRef.current
+      if (lm) {
+        // strip: park the row at +vw (the list entrant park)
+        for (const m of planes) {
+          if (m.userData.inRow) m.position.set(window.innerWidth, 0, 0)
+        }
+      } else {
+        parkReturnMount()
       }
-      if (Math.abs(wallY) < 1) {
-        wallY = 0
-        finish()
-        return
-      }
-      hiddenGlideRef.current = true
-      startResetGlide(finish)
+      startViewTransition(lm, true)
+      gsap.set(canvas, { opacity: 1, pointerEvents: "auto" })
+      onRestored?.()
     }
     cancelImplRef.current = () => {
       killResetTween()
@@ -1640,6 +1686,7 @@ function WebGLGallery(
     //   (The former +1.2vw teleport branch is GONE: it hard-teleported
     //   the VISIBLE deep-linked strip offscreen — a onscreen snap.)
     introFlyImplRef.current = () => {
+      bootFlags.curtainFlown = true // remounts after this take the return path
       if (!INTRO_EXPLODE) return // plan B: no explode — the fade reveals
       if (viewTrans || requeuing) return // never fight a live wave
       const listBoot = wasListMode
@@ -1665,12 +1712,12 @@ function WebGLGallery(
       })
     }
 
-    // ── overview ↔ list view transition (RP decompiled choreography) ────
-    // ripple pre-announcement → fly-out to the nearest horizontal edge →
-    // crossfired fly-in re-forming the destination row from alternating
-    // edges (odd slots from the left, even from the right). On completion
-    // the tick loop resumes ownership — fly-in targets equal the layout
-    // math exactly, so the handoff is seamless.
+    // ── overview ↔ list view transition (RP decompiled choreography —
+    // same ONE-clock grammar as the requeue banner above): exits fly to
+    // the nearest horizontal edge immediately, entrants revive at the
+    // right-edge park and fly in, kept photos follow after a 0.5s flat.
+    // On completion the tick loop resumes ownership — fly-in targets
+    // equal the layout math exactly, so the handoff is seamless.
     const startViewTransition = (toList: boolean, enterOnly = false, intro = false) => {
       viewTrans?.kill() // supersede any in-flight choreography
       killRequeue() // and any in-flight requeue (mutual supersede)
@@ -1684,7 +1731,6 @@ function WebGLGallery(
       const timers: number[] = []
       let killed = false
       transitioning++
-      vtPhase = "in"
       // absorb a pool deferred across this mode edge NOW (cat+mode in
       // the same hash): the fly-in rebinds to the NEW pool's photos
       // offscreen, in BOTH directions. Deferring the handoff to the
@@ -2020,7 +2066,6 @@ function WebGLGallery(
         ),
       )
       viewTrans = {
-        phase: () => vtPhase,
         kill: () => {
           if (killed) return
           killed = true
@@ -2124,7 +2169,8 @@ function WebGLGallery(
       }
       wasActive = activeRef.current
       // layout-mode edge while live (overview ↔ list route change) → the
-      // full RP choreography (ripple → fly-out → fly-in). No !viewTrans
+      // full RP one-clock choreography (nearest-edge exits → right-park
+      // revival fly-in). No !viewTrans
       // guard: an edge DURING a transition supersedes it (startView-
       // Transition kills the in-flight one first and absorbs any pending
       // pool) — the old guard swallowed the edge but still flipped
@@ -2139,6 +2185,14 @@ function WebGLGallery(
       if (pendingListEnter && lm && listSlots.length && activeRef.current && !viewTrans) {
         pendingListEnter = false
         startViewTransition(true, true)
+      }
+      // remount-into-overview fly-in (project close: the gallery unmounted
+      // and re-seeded — the curtain is long gone, seedPool parked the
+      // lattice at +1.2vw for RP's return-visit activation entrance)
+      if (pendingOverviewEnter && !lm && activeRef.current && !viewTrans) {
+        pendingOverviewEnter = false
+        wallY = 0
+        startViewTransition(false, true)
       }
       // damp per RP: per-frame 1-exp(-0.05) at 60fps → rate 3/s
       A += (jRaw - A) * (1 - Math.exp(-3 * dt))
@@ -2284,7 +2338,7 @@ function WebGLGallery(
       // breathing keeps the live wall rendering every frame; when the
       // wall is hidden (list/info) we only render on real changes
       if (activeRef.current || dirty || firstFrames > 0 || transitioning > 0) {
-        firstFrames--
+        if (firstFrames > 0) firstFrames--
         renderer.render(scene, camera)
       }
 
@@ -2338,7 +2392,7 @@ function WebGLGallery(
     rendererRef.current = renderer
 
     // DEV-only introspection for local verification (layout math, wrap
-    // cursors, transition phase) — never present in production builds.
+    // cursors) — never present in production builds.
     if (import.meta.env.DEV) {
       ;(window as unknown as Record<string, unknown>).__rpWall = {
         list: () => listModeRef.current,
@@ -2359,7 +2413,6 @@ function WebGLGallery(
             h: m.scale.y,
             ar: m.userData.ar,
           })),
-        phase: () => (viewTrans ? viewTrans.phase() : null),
         busy: () => requeuing,
         transitioning: () => transitioning,
         hover: () => ({
@@ -2434,9 +2487,9 @@ function WebGLGallery(
   // ── info enter: RP hard cut (opacity 0, duration 0 — no fade) ────────
   // Layout effect so the canvas is hidden in the FIRST paint of the
   // #/info route change, together with App hiding nav/footer. Exit is
-  // NOT handled here: overview waits for App → restoreFromInfo (1.4s
-  // wall glide, then a hard pop); info→list releases ownership so the
-  // next list→overview falls back to the generic fade-in.
+  // NOT handled here: App → restoreFromInfo re-enters the wall (return
+  // park + enter-only fly-in); info→list releases ownership so the next
+  // list→overview falls back to the generic fade-in.
   useLayoutEffect(() => {
     const c = canvasRef.current
     if (infoOpen) {
