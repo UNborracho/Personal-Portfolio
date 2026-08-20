@@ -27,3 +27,16 @@ photo/
 # internal working docs (not part of the shipped site)
 site-info.md
 src/imports/
+
+# reference-site decompilation archive — local only (public repo: no third-party
+# decompiled code tracked; the spec moved to docs/animation-spec.md)
+.scratch/
+
+# legacy ffmpeg-era pipeline (superseded by scripts/photos.mjs webp pipeline)
+scripts/compress-photos.sh
+scripts/photo-manifest.tsv
+
+# internal working docs — local only (public repo)
+RULES.md
+product.md
+CLAUDE.md

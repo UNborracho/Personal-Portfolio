@@ -9,7 +9,7 @@ An infinite, scroll-driven photography portfolio. The gallery is a Three.js plan
 ## Features
 
 - **Conveyor gallery** — 36 planes on a 4-column curved layout with true aspect ratios (no distortion, no overlap); planes scrolling off re-enter bound to the next photo of the lap.
-- **RP-faithful motion system** — intro chip → sequential stack pop, overview/list spatial morphs, filter switches with one 1.4s clock (all timing decompiled from the reference, archived in `.scratch/`).
+- **RP-faithful motion system** — intro chip → sequential stack pop, overview/list spatial morphs, filter switches with one 1.4s clock (all timing decompiled from the reference; spec in `docs/animation-spec.md`).
 - **Real-progress preloader** — the counter can never outrun actual bytes: progress is clamped to the first-lap thumbs the wall itself will bind.
 - **Raycast interaction** — hover for a floating series card; click deep-links into the series at that exact photo.
 - **View transitions** — the WebGL gallery stays alive across mode switches; every transition follows the reference rhythm.
@@ -50,7 +50,8 @@ src/
   shared.ts         # wall model derived from the manifest
   photo-manifest.ts # AUTO-GENERATED — do not edit
 scripts/photos.mjs  # photo pipeline (sharp)
-.scratch/           # reference-site decompilation + animation spec (Chinese)
+docs/
+  animation-spec.md # animation spec, decompiled grammar records (Chinese)
 RULES.md            # working rules distilled from every incident (Chinese)
 product.md          # project navigation doc (Chinese)
 ```
