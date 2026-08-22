@@ -4,6 +4,40 @@
     <!-- figma:head-start -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <script>
+      /* First-paint theme: mirrors main.tsx's logic (localStorage "theme",
+       default "light" — NOT prefers-color-scheme) but runs before ANY
+       network wait, closing the white-flash window for dark-theme
+       return visitors on slow connections. The html background holds
+       the viewport until the CSS arrives. */
+      ;(function () {
+        try {
+          var dark = (localStorage.getItem('theme') || 'light') === 'dark'
+          var d = document.documentElement
+          d.dataset.theme = dark ? 'dark' : 'light'
+          d.style.background = dark ? '#080808' : '#fefefe'
+          d.style.colorScheme = dark ? 'dark' : 'light'
+          var m = document.createElement('meta')
+          m.name = 'theme-color'
+          m.content = dark ? '#080808' : '#fefefe'
+          document.head.appendChild(m)
+        } catch (e) {}
+      })()
+    </script>
+    <link
+      rel="preload"
+      href="/fonts/space-grotesk-latin-700-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/ibm-plex-mono-latin-500-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <title><!-- figma:title --></title>
     <!-- figma:head-end -->
   </head>

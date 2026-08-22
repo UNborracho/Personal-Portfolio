@@ -7,17 +7,22 @@ import {
   forwardRef,
   useMemo,
   useCallback,
+  lazy,
+  Suspense,
 } from "react"
 import Lenis from "lenis"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
 import { ScrambleTextPlugin } from "gsap/ScrambleTextPlugin"
-import WebGLGallery, {
-  WALL_SEED,
-  INTRO_EXPLODE,
-  bootFlags,
-  type GalleryHandle,
-} from "./WebGLGallery"
+import { WALL_SEED, INTRO_EXPLODE, bootFlags } from "./gallery-flags"
+import type { GalleryHandle } from "./WebGLGallery"
+
+// The WebGL engine (three ≈ 500KB raw) rides in its OWN async chunk,
+// fetched only when the device will actually mount it — DOM-fallback
+// devices (mobile/reduced-motion) never download it. The intro beat's
+// existing isBootReady poll (60ms retry, 4s cap) absorbs the chunk's
+// parallel load; the curtain covers the gap.
+const WebGLGallery = lazy(() => import("./WebGLGallery"))
 import Cursor from "./Cursor"
 import Transition from "./Transition"
 import { useRoute, nav, navReplace, type Mode } from "./router"
@@ -1786,24 +1791,26 @@ export default function App() {
               for project/info; list↔overview mode flips trigger the RP view
               transition inside the gallery. */}
           {webglOk ? (
-            <WebGLGallery
-              ref={galleryRef}
-              active={view === "main" && !infoOpen}
-              infoOpen={infoOpen}
-              listMode={mode === "list"}
-              pool={pool}
-              isDark={isDark}
-              onHover={setHoveredWP}
-              onSeq={(n) => footerOdomRef.current?.to(n)}
-              onResetScroll={() => {
-                // the wall already reset its own virtual position to top
-                // (instant, at re-seed) — sync the window scroll to match
-                // (page is locked; zero visual impact) + odometer back to 1
-                lenisRef.current?.scrollTo(0, { immediate: true })
-                footerOdomRef.current?.to(1)
-              }}
-              onPick={openProject}
-            />
+            <Suspense fallback={null}>
+              <WebGLGallery
+                ref={galleryRef}
+                active={view === "main" && !infoOpen}
+                infoOpen={infoOpen}
+                listMode={mode === "list"}
+                pool={pool}
+                isDark={isDark}
+                onHover={setHoveredWP}
+                onSeq={(n) => footerOdomRef.current?.to(n)}
+                onResetScroll={() => {
+                  // the wall already reset its own virtual position to top
+                  // (instant, at re-seed) — sync the window scroll to match
+                  // (page is locked; zero visual impact) + odometer back to 1
+                  lenisRef.current?.scrollTo(0, { immediate: true })
+                  footerOdomRef.current?.to(1)
+                }}
+                onPick={openProject}
+              />
+            </Suspense>
           ) : (
             /* DOM masonry fallback (no WebGL / reduced motion) */
             <Transition

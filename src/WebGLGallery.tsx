@@ -10,6 +10,7 @@ import {
 import * as THREE from "three"
 import gsap from "gsap"
 import { shuffled, type WallPhoto } from "./shared"
+import { WALL_SEED, INTRO_EXPLODE, bootFlags } from "./gallery-flags"
 
 // ── Layout constants (tunable) ──────────────────────────────────────────
 const ROWS = 9
@@ -21,22 +22,10 @@ const FOV = 50
 const CURVE = 0.06 // parabolic recede depth (cylinder bend strength)
 const HOVER_HOLD = 2 // frames a candidate must stay stable before hover switches
 
-/** Deterministic wall seed — the first lap's shuffle must match the
- *  preloader's preload list (App reads the same constant via wallSequence). */
-export const WALL_SEED = 20260815
-
-// Plan B fallback: set false to skip the explode entirely (wall renders
-// laid-out behind the curtain; the fade alone reveals it — RP's
-// non-home-route form). One-line kill switch if the explode ever acts up.
-export const INTRO_EXPLODE = true
-
-// Module scope on purpose: survives gallery remounts (project routes
-// unmount the whole main block). RP's `started` state parity — the
-// loading curtain runs ONCE per page load, so a remounted gallery must
-// take the RETURN-VISIT boot path, never the first-load stack park.
-// Set by App at the intro beat (and inside introFlyImpl) — even when
-// the gallery is unmounted at that moment (reload straight into #/p/…).
-export const bootFlags = { curtainFlown: false }
+/** Deterministic wall seed + intro flags live in ./gallery-flags
+ *  (kept free of three imports so App can read them without pulling
+ *  this chunk — it is dynamically imported only when webglOk). */
+export { WALL_SEED, INTRO_EXPLODE, bootFlags } from "./gallery-flags"
 
 export interface GalleryHandle {
   /** RP info-exit re-enter (invoked by App when #/info closes): the
@@ -670,8 +659,14 @@ function WebGLGallery(
       }
     }
 
-    // prefetch upcoming conveyor photos so wraps are always cache hits
+    // prefetch upcoming conveyor photos so wraps are always cache hits.
+    // Throttled while the intro curtain owns the pipe: the boot lap's
+    // preload list is still downloading, and 12 parallel engine fetches
+    // steal bandwidth from exactly the photos the counter waits on
+    // (adds seconds to the curtain on slow links). introLocked lifts at
+    // explode+2s / first input — same gate, same window.
     const prefetch = () => {
+      if (introLocked) return
       if (!seq.length) return
       for (let k = 0; k < PREFETCH; k++) {
         ensureTex(seq[(nextIdx + k) % N])
