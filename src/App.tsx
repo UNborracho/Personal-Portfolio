@@ -11,6 +11,7 @@ import {
 import Lenis from "lenis"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
+import { ScrambleTextPlugin } from "gsap/ScrambleTextPlugin"
 import WebGLGallery, {
   WALL_SEED,
   INTRO_EXPLODE,
@@ -34,7 +35,27 @@ import {
   type CatFilter,
 } from "./shared"
 
-gsap.registerPlugin(ScrollTrigger)
+gsap.registerPlugin(ScrollTrigger, ScrambleTextPlugin)
+
+// ── RP hover scramble (decompiled layout.js): ScrambleText, duration
+// 1.2, chars "upperCase", speed 0.1 — letters roll through uppercase
+// noise and re-lock into the original text. Reduced motion: skip.
+const scrambleOK =
+  typeof window !== "undefined" &&
+  !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+
+function scrambleIn(e: React.MouseEvent<HTMLElement>) {
+  const el = e.currentTarget
+  if (!scrambleOK) return
+  const original = el.dataset.orig ?? el.textContent ?? ""
+  el.dataset.orig = original
+  gsap.to(el, {
+    duration: 1.2,
+    ease: "none",
+    overwrite: true,
+    scrambleText: { text: original, chars: "upperCase", speed: 0.1 },
+  })
+}
 
 type View = "main" | "project"
 
@@ -478,6 +499,7 @@ function NavBar({
   projectSeries,
   onClose,
   onToggleTheme,
+  onOpenInfo,
 }: {
   headerRef?: React.RefObject<HTMLElement | null>
   isDark: boolean
@@ -488,6 +510,7 @@ function NavBar({
   projectSeries?: Series | null
   onClose?: () => void
   onToggleTheme: () => void
+  onOpenInfo?: () => void
 }) {
   // blur only on fine pointers: on phones the compositor re-blurs the nav
   // every frame over the animating canvas — one of the biggest mobile costs.
@@ -510,16 +533,30 @@ function NavBar({
         padding: "0 20px",
         height: 60,
         gap: 20,
+        // RP nav: static veil (31% white fading down through 60%) over
+        // the 4-layer navBlur frost (see .nav-frost in index.css). No
+        // border — the frost is the seam. Coarse pointers keep the flat
+        // near-opaque bar (4 backdrop layers over the animating canvas
+        // is one of the biggest mobile compositor costs).
         background: blurNav
-          ? "color-mix(in srgb, var(--bg) 88%, transparent)"
+          ? "linear-gradient(180deg, color-mix(in srgb, var(--bg) 31%, transparent) 60%, transparent)"
           : "var(--bg)",
-        backdropFilter: blurNav ? "blur(14px)" : undefined,
-        WebkitBackdropFilter: blurNav ? "blur(14px)" : undefined,
-        borderBottom: "1px solid color-mix(in srgb, var(--fg) 8%, transparent)",
+        borderBottom: blurNav
+          ? undefined
+          : "1px solid color-mix(in srgb, var(--fg) 8%, transparent)",
       }}
     >
+      {blurNav && (
+        <div className="nav-frost" aria-hidden="true">
+          <div />
+          <div />
+          <div />
+          <div />
+        </div>
+      )}
       <button
         onClick={() => nav("#/")}
+        onMouseEnter={scrambleIn}
         style={{
           ...DISPLAY,
           fontSize: 13,
@@ -529,23 +566,28 @@ function NavBar({
           cursor: "pointer",
           whiteSpace: "nowrap",
           letterSpacing: "0.04em",
+          position: "relative",
+          zIndex: 1,
         }}
       >
         SPIKE HU
       </button>
       {!onClose && (
         <span
-          className="nav-center"
+          className="nav-availability"
           style={{
             ...MONO,
             fontSize: 10,
             color: fg,
             opacity: 0.42,
-            textAlign: "center",
-            flex: 1,
+            lineHeight: 1.5,
+            whiteSpace: "nowrap",
+            zIndex: 1,
           }}
         >
-          PHOTOGRAPHER AVAILABLE WORLDWIDE&nbsp;|&nbsp;BASED IN SH
+          PHOTOGRAPHER
+          <br />
+          AVAILABLE WORLDWIDE&nbsp;|&nbsp;BASED IN SH
         </span>
       )}
       <div
@@ -554,6 +596,8 @@ function NavBar({
           alignItems: "center",
           gap: 18,
           whiteSpace: "nowrap",
+          position: "relative",
+          zIndex: 1,
         }}
       >
         {onClose ? (
@@ -595,6 +639,7 @@ function NavBar({
                             : `#/${cat}/list`,
                       )
                     }
+                    onMouseEnter={scrambleIn}
                     style={{
                       ...MONO,
                       fontSize: 11,
@@ -624,8 +669,13 @@ function NavBar({
               <button
                 onClick={() => {
                   const base = mainHref(cat, mode)
-                  nav(infoOpen ? base : `${base}/info`)
+                  // RP layout.js @29048: canvas fades 0.5s power4.in
+                  // BEFORE the route flips (App's openInfo chains nav)
+                  if (infoOpen) nav(base)
+                  else if (onOpenInfo) onOpenInfo()
+                  else nav(`${base}/info`)
                 }}
+                onMouseEnter={scrambleIn}
                 style={{
                   ...MONO,
                   fontSize: 11,
@@ -643,6 +693,7 @@ function NavBar({
             <a
               className="nav-mail"
               href="mailto:1162844453@qq.com"
+              onMouseEnter={scrambleIn}
               style={{
                 ...MONO,
                 fontSize: 10,
@@ -650,12 +701,6 @@ function NavBar({
                 opacity: 0.45,
                 textDecoration: "none",
               }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.textDecoration = "underline")
-              }
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.textDecoration = "none")
-              }
             >
               1162844453@QQ.COM
             </a>
@@ -1012,6 +1057,18 @@ export default function App() {
   // runs restoreFromInfo: the wall re-enters from the return park
   // (+1.2vw → enter-only fly-in, RP home-remount) with canvas/nav/footer
   // popping the instant the flight begins.
+  // ── RP info entry (layout.js @29048): canvas fades out 0.5s
+  // power4.in BEFORE the route flips — replaces the old hard cut.
+  // The info layer's own entrance runs after the flip; exit stays the
+  // verified 1s power4.out close → restoreFromInfo path.
+  const openInfo = useCallback(() => {
+    if (infoOpen) return
+    const base = mainHref(route.cat, mode)
+    const go = () => nav(`${base}/info`)
+    if (galleryRef.current) galleryRef.current.fadeOutForInfo().then(go)
+    else go() // DOM fallback / gallery not mounted — flip immediately
+  }, [infoOpen, route.cat, mode])
+
   const restoreChrome = useCallback(() => {
     const els = [navRef.current, footerRef.current].filter(
       (el): el is HTMLElement => !!el,
@@ -1600,6 +1657,7 @@ export default function App() {
             infoOpen={infoOpen}
             projectSeries={null}
             onToggleTheme={toggleTheme}
+            onOpenInfo={openInfo}
           />
           {panelWP && (
             <HoverPanel wp={panelWP} panelRef={panelRef} bg={bg} fg={fg} />

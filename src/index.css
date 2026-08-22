@@ -124,14 +124,6 @@ html.cursor-none * {
 
 /* ── App chrome visibility rules (moved out of a JSX <style> block per
    AGENTS.md: global CSS belongs in index.css) ─────────────────────── */
-.nav-center {
-  display: flex !important;
-}
-@media (max-width: 1139px) {
-  .nav-center {
-    display: none !important;
-  }
-}
 @media (max-width: 639px) {
   .nav-mail {
     display: none !important;
@@ -151,4 +143,145 @@ html.cursor-none * {
   .intro-mobile {
     display: flex;
   }
+}
+@media (max-width: 600px) {
+  .intro-desktop {
+    display: none;
+  }
+  .intro-mobile {
+    display: flex;
+  }
+}
+/* ── RP header frost (decompiled CSS module, layout.js) ──────────── */
+/* email link underline: 1.5px bar, scaleX(0)→1 from left, .4s ease */
+.nav-mail {
+  position: relative;
+  display: inline-flex;
+}
+.nav-mail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 100%;
+  height: 1.5px;
+  background: var(--fg);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.4s ease;
+  will-change: transform;
+}
+.nav-mail:hover::before {
+  transform: scaleX(1);
+}
+/* RP: availability column — absolutely placed at the left-third line,
+   hidden below 1140px (decompiled layout.js CSS module) */
+.nav-availability {
+  position: absolute;
+  left: 33.3333%;
+  top: 50%;
+  transform: translateY(-50%);
+}
+@media (max-width: 1140px) {
+  .nav-availability {
+    display: none;
+  }
+}
+/* ── RP navBlur frost (decompiled layout.js CSS module) ────────────
+   4 stacked backdrop-filter layers, blur 1/2/4/8px, each masked to a
+   progressively higher band → cumulative blur grows toward the TOP of
+   the nav; photos roll out of the fog at the nav's bottom seam. The
+   CSS-module's `transition: transform 1s` is dead code in RP (no JS
+   ever writes transform) — intentionally not copied. */
+.nav-frost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 64px; /* 60px nav + ~7% bleed — RP ratio is 75/70 */
+  z-index: 0;
+  pointer-events: none;
+}
+.nav-frost > div {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+.nav-frost > div:nth-child(1) {
+  z-index: 2;
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+  -webkit-mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 0,
+    #fff 12.5%,
+    #fff 37.5%,
+    #fff 50%
+  );
+  mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 0,
+    #fff 12.5%,
+    #fff 37.5%,
+    #fff 50%
+  );
+}
+.nav-frost > div:nth-child(2) {
+  z-index: 3;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  -webkit-mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 12.5%,
+    #fff 37.5%,
+    #fff 50%,
+    #fff 62.5%
+  );
+  mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 12.5%,
+    #fff 37.5%,
+    #fff 50%,
+    #fff 62.5%
+  );
+}
+.nav-frost > div:nth-child(3) {
+  z-index: 4;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  -webkit-mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 37.5%,
+    #fff 50%,
+    #fff 62.5%,
+    #fff 75%
+  );
+  mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 37.5%,
+    #fff 50%,
+    #fff 62.5%,
+    #fff 75%
+  );
+}
+.nav-frost > div:nth-child(4) {
+  z-index: 5;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  -webkit-mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 50%,
+    #fff 62.5%,
+    #fff 75%,
+    #fff 87.5%
+  );
+  mask: linear-gradient(
+    0deg,
+    hsla(0, 0%, 100%, 0) 50%,
+    #fff 62.5%,
+    #fff 75%,
+    #fff 87.5%
+  );
 }

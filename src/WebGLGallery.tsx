@@ -51,6 +51,13 @@ export interface GalleryHandle {
    *  network round trip, so the three side can never lag the curtain's
    *  preloader (Safari straggler class eliminated at the root). */
   setDecodedImages: (imgs: Map<string, HTMLImageElement>) => void
+  /** RP info ENTRY (decompiled layout.js @29048, onClick "/contact"):
+   *  fade the canvas out 0.5s power4.in BEFORE the route flips — App
+   *  chains nav(`${base}/info`) in the promise's resolve. Takes canvas
+   *  ownership up-front so the active-prop effect can't fight the fade
+   *  when the route lands. (The hard-cut mount-window path in RP is a
+   *  first-load special case, not the interaction path.) */
+  fadeOutForInfo: () => Promise<void>
   /** RP intro entrance (decompiled lazy816.js boot + `l` timeline):
    *  the boot parked every photo dead-center as a 150px stack (parkStack)
    *  — the stack now EXPLODES outward into the lattice on RP's one clock
@@ -301,6 +308,22 @@ function WebGLGallery(
         if (impl) impl(onRestored)
         else onRestored?.() // engine not up yet — nothing to glide
       },
+      fadeOutForInfo: () =>
+        new Promise<void>((resolve) => {
+          const c = canvasRef.current
+          if (!c || !activeRef.current) {
+            resolve() // engine not up / canvas already hidden — flip now
+            return
+          }
+          infoCanvasRef.current = true
+          gsap.killTweensOf(c)
+          gsap.to(c, {
+            opacity: 0,
+            duration: 0.5,
+            ease: "power4.in",
+            onComplete: () => resolve(),
+          })
+        }),
       introFlyIn: () => {
         // engine not up yet → the wall is still blank; App's curtain fade
         // alone reveals it (photos then bind with their own first-load
