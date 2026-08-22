@@ -292,10 +292,9 @@ interface IntroOdometerHandle {
   raw: (v: number) => void
 }
 
-const IntroOdometer = forwardRef<
-  IntroOdometerHandle,
-  { digitStyle: React.CSSProperties }
->(function IntroOdometer({ digitStyle }, ref) {
+const IntroOdometer = forwardRef<IntroOdometerHandle, {
+  digitStyle: React.CSSProperties
+}>(function IntroOdometer({ digitStyle }, ref) {
   const rootRef = useRef<HTMLDivElement>(null)
   const hRef = useRef<HTMLSpanElement>(null)
   const tRef = useRef<HTMLSpanElement>(null)
@@ -310,12 +309,9 @@ const IntroOdometer = forwardRef<
     const hi = v >= 100 ? 1 : 0
     const ti = v >= 100 ? 10 : Math.floor(v / 10)
     const oi = Math.min(100, Math.floor(v))
-    if (hRef.current)
-      hRef.current.style.transform = `translateY(${-hi * ch}px)`
-    if (tRef.current)
-      tRef.current.style.transform = `translateY(${-ti * ch}px)`
-    if (oRef.current)
-      oRef.current.style.transform = `translateY(${-oi * ch}px)`
+    if (hRef.current) hRef.current.style.transform = `translateY(${-hi * ch}px)`
+    if (tRef.current) tRef.current.style.transform = `translateY(${-ti * ch}px)`
+    if (oRef.current) oRef.current.style.transform = `translateY(${-oi * ch}px)`
     if (rootRef.current)
       rootRef.current.dataset.v = String(
         Math.round(Math.min(100, Math.max(0, v))),
@@ -1290,34 +1286,26 @@ export default function App() {
         gsap.set(".intro-logo", { opacity: 1 })
         return
       }
-      gsap.fromTo(
-        ".intro-title .intro-char",
-        { yPercent: 100, rotate: 7 },
-        {
-          yPercent: 0,
-          rotate: 0,
-          duration: 0.8,
-          ease: "power2.out",
-          stagger: 0.04,
-        },
-      )
+      gsap.fromTo(".intro-title .intro-char", { yPercent: 100, rotate: 7 }, {
+        yPercent: 0,
+        rotate: 0,
+        duration: 0.8,
+        ease: "power2.out",
+        stagger: 0.04,
+      })
       // RP introText lines: pure VISIBILITY stagger (.045, delay .5 —
       // no y movement), small uppercase lines above the title (C)
-      gsap.fromTo(
-        ".intro-sub .intro-char",
-        { visibility: "hidden" },
-        {
-          visibility: "visible",
-          stagger: 0.045,
-          delay: 0.5,
-          ease: "none",
-        },
-      )
-      gsap.fromTo(
-        ".intro-logo",
-        { opacity: 0 },
-        { opacity: 1, duration: 0.4, ease: "power2.inOut" },
-      )
+      gsap.fromTo(".intro-sub .intro-char", { visibility: "hidden" }, {
+        visibility: "visible",
+        stagger: 0.045,
+        delay: 0.5,
+        ease: "none",
+      })
+      gsap.fromTo(".intro-logo", { opacity: 0 }, {
+        opacity: 1,
+        duration: 0.4,
+        ease: "power2.inOut",
+      })
     }, introRef)
 
     // RP's beat (layout.js `f` timeline, decompiled): counter locks at

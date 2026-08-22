@@ -151,8 +151,7 @@ function computeLayout(vw: number, vh: number): Layout {
   const ncols = ncolsFor(vw)
   // unit ≈ average photo width → ~4.2 slots per row desktop (RP mix);
   // PHOTO_SCALE shrinks photos ~20% → more slots per row (denser, fuller)
-  const unit =
-    ((vw - SIDE_MARGIN * 2) / (ncols + 0.35)) * PHOTO_SCALE
+  const unit = ((vw - SIDE_MARGIN * 2) / (ncols + 0.35)) * PHOTO_SCALE
   const pitch = unit * ROW_PITCH
   const halfSpread = (vw - SIDE_MARGIN * 2) / 2
   const budget = vw - SIDE_MARGIN * 2
@@ -161,7 +160,9 @@ function computeLayout(vw: number, vh: number): Layout {
   // seeded per-row budget factor → rows hold a varying 4–5 (RP rhythm);
   // phones clamp the floor so a row never degrades to a lone photo
   const rowBudget = (r: number) =>
-    budget * ((ncols <= 2 ? 0.92 : ROW_BUDGET_LO) + ROW_BUDGET_SWING * latHash(r * 31 + 5))
+    budget *
+    ((ncols <= 2 ? 0.92 : ROW_BUDGET_LO) +
+      ROW_BUDGET_SWING * latHash(r * 31 + 5))
   // pack generously, then cut at the last COMPLETE row that fits the
   // plane budget — no orphan half-rows in the lattice
   const all: { x: number; w: number; row: number; depth: number }[] = []
@@ -217,8 +218,7 @@ function computeLayout(vw: number, vh: number): Layout {
   }
   // complete-row cut ≤ maxCount
   const rowTotals = new Map<number, number>()
-  for (const s of all)
-    rowTotals.set(s.row, (rowTotals.get(s.row) ?? 0) + 1)
+  for (const s of all) rowTotals.set(s.row, (rowTotals.get(s.row) ?? 0) + 1)
   let acc = 0
   let count = 0
   let rowN = 0
@@ -284,9 +284,9 @@ function WebGLGallery(
   const introFlyImplRef = useRef<(() => void) | null>(null)
   const flushTexturesImplRef = useRef<(() => void) | null>(null)
   const isBootReadyImplRef = useRef<(() => boolean) | null>(null)
-  const setDecodedImagesImplRef = useRef<
-    ((imgs: Map<string, HTMLImageElement>) => void) | null
-  >(null)
+  const setDecodedImagesImplRef = useRef<((
+    imgs: Map<string, HTMLImageElement>,
+  ) => void) | null>(null)
   const cancelImplRef = useRef<(() => void) | null>(null)
 
   useImperativeHandle(
@@ -627,7 +627,14 @@ function WebGLGallery(
       patchMaterial(mat)
       const mesh = new THREE.Mesh(geo, mat)
       mesh.visible = false
-      mesh.userData = { slot: i, wp: null, want: null, ar: 1, lastY: 0, lastX: 0 }
+      mesh.userData = {
+        slot: i,
+        wp: null,
+        want: null,
+        ar: 1,
+        lastY: 0,
+        lastX: 0,
+      }
       scene.add(mesh)
       planes.push(mesh)
     }
@@ -737,32 +744,32 @@ function WebGLGallery(
       loader.load(
         key,
         (tex) => {
-        if (disposedRef.current) {
-          tex.dispose()
-          return
-        }
-        tex.colorSpace = THREE.SRGBColorSpace
-        tex.generateMipmaps = true
-        tex.minFilter = THREE.LinearMipmapLinearFilter
-        tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
-        texCache.set(key, tex)
-        queueUpload(tex) // GPU upload at idle, not mid-scroll
-        evictIfNeeded()
-        // hand it to any plane waiting on this photo (preserve the
-        // crossfade stagger it was assigned — late arrivals fade too,
-        // instead of popping in fully opaque)
-        for (const m of planes) {
-          if (
-            m.userData.want &&
-            (m.userData.want as WallPhoto).photo.thumb === key
-          ) {
-            bindPlane(m, m.userData.want as WallPhoto)
-            // boot-stack straggler: the texture arrived while the intro
-            // curtain is still up — the plane joins the center stack
-            // (150px square) instead of popping in at its lattice slot
-            if (bootParked) parkOne(m)
+          if (disposedRef.current) {
+            tex.dispose()
+            return
           }
-        }
+          tex.colorSpace = THREE.SRGBColorSpace
+          tex.generateMipmaps = true
+          tex.minFilter = THREE.LinearMipmapLinearFilter
+          tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
+          texCache.set(key, tex)
+          queueUpload(tex) // GPU upload at idle, not mid-scroll
+          evictIfNeeded()
+          // hand it to any plane waiting on this photo (preserve the
+          // crossfade stagger it was assigned — late arrivals fade too,
+          // instead of popping in fully opaque)
+          for (const m of planes) {
+            if (
+              m.userData.want &&
+              (m.userData.want as WallPhoto).photo.thumb === key
+            ) {
+              bindPlane(m, m.userData.want as WallPhoto)
+              // boot-stack straggler: the texture arrived while the intro
+              // curtain is still up — the plane joins the center stack
+              // (150px square) instead of popping in at its lattice slot
+              if (bootParked) parkOne(m)
+            }
+          }
         },
         undefined,
         (err) => {
@@ -855,8 +862,9 @@ function WebGLGallery(
     // NOTE prefers-reduced-motion: unreachable here in practice — App's
     // useWebGLOk falls back to DOM masonry under reduce — but pinned to 0
     // as belt-and-braces (no melt, panel-only feedback).
-    const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)")
-      .matches
+    const REDUCED = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches
     let hoverPlane: THREE.Mesh | null = null
     const meltTo = (m: THREE.Mesh, v: number) => {
       const unis = unisOf(m)
@@ -1240,9 +1248,7 @@ function WebGLGallery(
       for (const m of rowPlanes) {
         const wpt = (m.userData.want ?? m.userData.wp) as WallPhoto | null
         const key = wpt?.photo.thumb ?? null
-        const ti = key
-          ? targets.findIndex((t) => t.wp.photo.thumb === key)
-          : -1
+        const ti = key ? targets.findIndex((t) => t.wp.photo.thumb === key) : -1
         if (ti >= 0 && !usedT.has(ti)) {
           usedT.add(ti)
           newRoster[ti] = m
@@ -1305,7 +1311,13 @@ function WebGLGallery(
             ease: EASE,
             delay: MOVE_DELAY,
           })
-          gsap.to(m.scale, { x: t.w, y: t.h, duration: SUB_DUR, ease: EASE, delay: S_DEL })
+          gsap.to(m.scale, {
+            x: t.w,
+            y: t.h,
+            duration: SUB_DUR,
+            ease: EASE,
+            delay: S_DEL,
+          })
           gsap.to(unis.uResolution.value, {
             x: t.w,
             y: t.h,
@@ -1465,9 +1477,7 @@ function WebGLGallery(
       // re-invokes setPool with the new pool (fly-in rebinds anyway),
       // so textures swap exactly once, inside the choreography.
       const modeEdge =
-        listModeRef.current !== wasListMode &&
-        activeRef.current &&
-        !viewTrans
+        listModeRef.current !== wasListMode && activeRef.current && !viewTrans
       if (modeEdge || viewTrans) {
         // transition in flight (launched by this same edge, or a later
         // cat change landed mid-choreography): park the newest pool —
@@ -1481,7 +1491,8 @@ function WebGLGallery(
       // guard — the "sticky flicker" note) BEFORE re-seeding/requeueing
       applyLayout(window.innerWidth, window.innerHeight)
       if (listModeRef.current) {
-        if (rowSeeded) requeue() // filter switch in list — spatial requeue
+        if (rowSeeded)
+          requeue() // filter switch in list — spatial requeue
         else seedRow() // first build (mount / deep link)
       } else {
         seedPool() // overview: instant re-seed (dissolve retired)
@@ -1513,7 +1524,8 @@ function WebGLGallery(
       hoverPlane = m
       hoveredKeyRef.current = key
       if (prev && prev !== m) {
-        if (snap) snapMelt(prev) // view exits reset presentation state
+        if (snap)
+          snapMelt(prev) // view exits reset presentation state
         else meltTo(prev, 0)
       }
       if (m && m !== prev) {
@@ -1539,7 +1551,7 @@ function WebGLGallery(
             .opacity > 0.5,
       )
       if (!hit) return null
-      const wp = (hit.object.userData.wp as WallPhoto) ?? null
+      const wp = hit.object.userData.wp as WallPhoto ?? null
       return wp ? { wp, mesh: hit.object as THREE.Mesh } : null
     }
 
@@ -1758,7 +1770,11 @@ function WebGLGallery(
     // right-edge park and fly in, kept photos follow after a 0.5s flat.
     // On completion the tick loop resumes ownership — fly-in targets
     // equal the layout math exactly, so the handoff is seamless.
-    const startViewTransition = (toList: boolean, enterOnly = false, intro = false) => {
+    const startViewTransition = (
+      toList: boolean,
+      enterOnly = false,
+      intro = false,
+    ) => {
       viewTrans?.kill() // supersede any in-flight choreography
       killRequeue() // and any in-flight requeue (mutual supersede)
       introFlown = true // the boot stack's wait is over — morph from it
@@ -1804,7 +1820,7 @@ function WebGLGallery(
         // target photo's OWN aspect: the plane rebinds to rowWp[i] at its
         // offscreen park — sizing by the OLD photo's ar would leave a
         // scale jump when the tick resumes with the new ar
-        const tw0 = rowWp[i] ?? (planes[i].userData.wp as WallPhoto | null)
+        const tw0 = rowWp[i] ?? planes[i].userData.wp as WallPhoto | null
         const ar = tw0 ? tw0.photo.w / tw0.photo.h : 1
         const w = boundW(sl.w, ar, L.pitch)
         return {
@@ -1855,7 +1871,11 @@ function WebGLGallery(
       // idle z-wave toggles WITH the view (RP uProgress: 0 in list =
       // wave on, .2 in overview = flat; 1s linear)
       tweens.push(
-        gsap.to(breathState, { v: toList ? 1 : 0, duration: 1, ease: "linear" }),
+        gsap.to(breathState, {
+          v: toList ? 1 : 0,
+          duration: 1,
+          ease: "linear",
+        }),
       )
       shared.uAxis.value = toList ? 1 : 0
 
@@ -1870,18 +1890,14 @@ function WebGLGallery(
       for (const m of planes) {
         const wpt = (m.userData.want ?? m.userData.wp) as WallPhoto | null
         const key = wpt?.photo.thumb ?? null
-        const ti = key
-          ? rowWp.findIndex((r) => r?.photo.thumb === key)
-          : -1
+        const ti = key ? rowWp.findIndex((r) => r?.photo.thumb === key) : -1
         if (ti >= 0 && !usedT.has(ti)) {
           usedT.add(ti)
           newRoster[ti] = m
         } else if (m.visible) nonSurvivors.push(m)
         else idle.push(m)
       }
-      const open = rowWp
-        .map((_, ti) => ti)
-        .filter((ti) => !usedT.has(ti))
+      const open = rowWp.map((_, ti) => ti).filter((ti) => !usedT.has(ti))
       const carriers = idle.slice(0, open.length)
       const rePurposed = nonSurvivors.slice(
         0,
@@ -2227,7 +2243,13 @@ function WebGLGallery(
       if (!viewTrans) shared.uAxis.value = lm ? 1 : 0
       // mount-into-list fly-in (gallery remounts on project visits, so the
       // activation edge cannot cover it — seedRow flagged it)
-      if (pendingListEnter && lm && listSlots.length && activeRef.current && !viewTrans) {
+      if (
+        pendingListEnter &&
+        lm &&
+        listSlots.length &&
+        activeRef.current &&
+        !viewTrans
+      ) {
         pendingListEnter = false
         startViewTransition(true, true)
       }
@@ -2254,7 +2276,9 @@ function WebGLGallery(
       // shared uniforms — bend & breathing (1:1 constants from RP source)
       shared.uTime.value = now / 1000
       shared.uSpeed.value = 2.5 * A * unit
-      shared.uBreath.value = activeRef.current ? 0.027 * unit * breathState.v : 0
+      shared.uBreath.value = activeRef.current
+        ? 0.027 * unit * breathState.v
+        : 0
       if (suppressWrap > 0) suppressWrap--
       const scrolling = Math.abs(A) > 0.003 || jRaw !== 0
       if (scrolling) lastScrollActivity = now
@@ -2291,7 +2315,7 @@ function WebGLGallery(
 
         if (lm) {
           // ── LIST: horizontal filmstrip row (y=0, z=0, slot sizes) ──
-          const slot = listSlots[(mesh.userData.rowIdx as number) ?? i]
+          const slot = listSlots[mesh.userData.rowIdx as number ?? i]
           if (!slot) continue
           const x = wrapCoord(slot.x + wallX, listTW / 2, listTW)
           const lastX = mesh.userData.lastX as number
@@ -2338,8 +2362,7 @@ function WebGLGallery(
         // ── OVERVIEW: vertical conveyor (collage lattice) ──
         const sl = L.slots[i]
         const baseY =
-          (sl.row - (L.rowN - 1) / 2) * L.pitch +
-          rowOffsetOf(sl.row, L.pitch)
+          (sl.row - (L.rowN - 1) / 2) * L.pitch + rowOffsetOf(sl.row, L.pitch)
         let y = baseY - s
         y = wrapCoord(y, L.cycleH / 2, L.cycleH)
 
@@ -2405,7 +2428,7 @@ function WebGLGallery(
               .opacity > 0.5,
         )
         const wp = hit
-          ? ((hit.object.userData.wp as WallPhoto | null) ?? null)
+          ? (hit.object.userData.wp as WallPhoto | null ?? null)
           : null
         if (wp && hit)
           candidate = {
@@ -2470,9 +2493,9 @@ function WebGLGallery(
         roster: () =>
           rowPlanes.map((m) => ({
             rowIdx: m.userData.rowIdx,
-            key: (
-              (m.userData.want ?? m.userData.wp) as WallPhoto | null
-            )?.photo.thumb ?? null,
+            key:
+              ((m.userData.want ?? m.userData.wp) as WallPhoto | null)?.photo
+                .thumb ?? null,
             x: m.position.x,
             visible: m.visible,
           })),
