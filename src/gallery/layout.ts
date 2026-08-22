@@ -44,8 +44,8 @@ export interface Slot {
 // ~50px vertical rhythm, interleaved rows, no overlap). The lattice is
 // STATIC (slots own x/w/row; photos flow through them on wrap) so the
 // conveyor semantics are untouched.
-const COL_H_GAP = 0.05 // ×unit horizontal gap between slots in a row
-const ROW_PITCH = 1.5 // ×unit vertical row rhythm
+const COL_H_GAP = 0.14 // ×unit horizontal gap between slots in a row
+const ROW_PITCH = 1.62 // ×unit vertical row rhythm (user: breathe more)
 const ROW_STAGGER = 0.08 // ×pitch seeded per-row vertical offset (±)
 const SLOT_H_CAP = 0.76 // ×pitch max photo height (overlap-safe bound)
 const PHOTO_SCALE = 0.8 // global photo size ≈ ×unit/list-slot width (user: −20%)
