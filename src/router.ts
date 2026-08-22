@@ -70,6 +70,22 @@ export function routeHash(route: Route): string {
   return `#/${parts.join("/")}`
 }
 
+/** User decision: a page REFRESH always lands on the overview route —
+ *  every reload plays the intro from the wall's top, regardless of
+ *  which hash the address bar carries (#/list, #/street, #/p/…).
+ *  In-session navigation (hashchange) is untouched. replaceState → no
+ *  stray history entry. Trade-off accepted: deep links (#/p/…) only
+ *  survive within a session, not across reloads. */
+export function forceOverviewOnLoad() {
+  const h = window.location.hash
+  if (h === "" || h === "#" || h === "#/") return
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}#/`,
+  )
+}
+
 export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() => parseHash())
   useEffect(() => {
