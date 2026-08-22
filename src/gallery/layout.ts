@@ -7,7 +7,7 @@ import { WALL_SEED } from "../gallery-flags"
 // visit.
 
 // ── Layout constants (tunable) ──────────────────────────────────────────
-export const ROWS = 9
+const ROWS = 9
 export const SLOT_COUNT = 4 * ROWS // max planes allocated; active = ncols × ROWS
 export const NUM_CYCLES = 10 // scroll-spacer span (~ "endless")
 export const GAP = 24

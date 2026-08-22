@@ -10,19 +10,19 @@ import * as THREE from "three"
 //    horizontal ripple (uAnim, pulses)
 //  - fragment: cover-fit UV (aspect-safe morphing) + displacement
 //    liquid swirl on hover (uHover)
-export type Uni1 = { value: number }
-export interface XYPair {
+type Uni1 = { value: number }
+interface XYPair {
   x: number
   y: number
 }
-export type Uni2 = { value: XYPair }
-export type PlaneUnis = {
+type Uni2 = { value: XYPair }
+type PlaneUnis = {
   uAnim: Uni1
   uHover: Uni1
   uResolution: Uni2
   uImageRes: Uni2
 }
-export type SharedUniforms = {
+type SharedUniforms = {
   uTime: Uni1
   uSpeed: Uni1
   uBreath: Uni1
