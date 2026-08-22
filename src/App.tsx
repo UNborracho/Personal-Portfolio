@@ -33,7 +33,15 @@ import {
   type WallPhoto,
   type CatFilter,
 } from "./shared"
-import { REDUCED_MOTION, fadeExit, MONO, DISPLAY, NOISE, type View } from "./ui"
+import {
+  REDUCED_MOTION,
+  fadeExit,
+  MONO,
+  DISPLAY,
+  NOISE,
+  FINE_POINTER,
+  type View,
+} from "./ui"
 import { Chars } from "./components/Chars"
 import {
   Odometer,
@@ -101,6 +109,13 @@ export default function App() {
   const route = useRoute()
   const [introDone, setIntroDone] = useState(false)
   const [hoveredWP, setHoveredWP] = useState<WallPhoto | null>(null)
+  // Hover is a fine-pointer concept. On touch, dragging the wall fires
+  // pointermove → raycast → this "hover" pops the 292px card over the
+  // viewport mid-drag — pure obstruction; taps already open projects
+  // and the mobile footer counter gives position feedback.
+  const hoverWP = (w: WallPhoto | null) => {
+    if (FINE_POINTER) setHoveredWP(w)
+  }
   // panel content lingers after hover clears → no mount/unmount blink
   const [panelWP, setPanelWP] = useState<WallPhoto | null>(null)
   const [theme, setTheme] = useState<"light" | "dark">(() =>
@@ -734,7 +749,7 @@ export default function App() {
           paddingLeft: "clamp(16px, 4vw, 40px)",
           paddingRight: "clamp(16px, 4vw, 40px)",
         }}
-        onMouseLeave={() => setHoveredWP(null)}
+        onMouseLeave={() => hoverWP(null)}
       >
         <div
           style={{
@@ -764,7 +779,7 @@ export default function App() {
                 textAlign: "inherit",
                 font: "inherit",
               }}
-              onMouseEnter={() => setHoveredWP(wp)}
+              onMouseEnter={() => hoverWP(wp)}
               onClick={() => openProject(wp)}
             >
               <img
@@ -977,8 +992,7 @@ export default function App() {
             onToggleTheme={toggleTheme}
             onOpenInfo={openInfo}
           />
-          {webglOk && // pointer event — this keeps every series reachable by // sr-only project index: the wall's only opener is a canvas
-          // keyboard / screen reader (cards reveal on focus, see
+          {webglOk && // keyboard / screen reader (cards reveal on focus, see // pointer event — this keeps every series reachable by // sr-only project index: the wall's only opener is a canvas
           // .sr-only-card in index.css).
           (
             <nav aria-label="Projects" className="sr-only">
@@ -1047,7 +1061,7 @@ export default function App() {
                   listMode={mode === "list"}
                   pool={pool}
                   isDark={isDark}
-                  onHover={setHoveredWP}
+                  onHover={hoverWP}
                   onSeq={(n) => footerOdomRef.current?.to(n)}
                   onResetScroll={() => {
                     // the wall already reset its own virtual position to top
