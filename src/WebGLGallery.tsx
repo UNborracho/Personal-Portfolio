@@ -1149,7 +1149,29 @@ function WebGLGallery(
       // fresh mount INTO list (deep link / back from project): the gallery
       // remounts, so no activation edge will fire — flag the shortened
       // enter-only fly-in for the tick loop (RP activation behavior)
-      if (firstBuild) pendingListEnter = true
+      if (firstBuild) {
+        pendingListEnter = true
+        // …and PLACE the row where the reveal will find it. Planes are
+        // born at position (0,0,0) — screen CENTER — and bindPlane never
+        // touches position, so without this the enter morph unfolds the
+        // strip out of a centered stack (the #/list-refresh display bug:
+        // curtain lifts → ONE stacked photo → planes fan out for 1.4s).
+        //   curtain still up (fresh load): park AT the slots — the
+        //     curtain fade is the whole reveal (RP non-home boot);
+        //   curtain long gone (project-close remount): park at +vw so
+        //     the morph flies the strip in (RP return-visit activation,
+        //     same entrant park restoreImplRef uses for list).
+        for (let i = 0; i < count; i++) {
+          const m = rowPlanes[i]
+          const s = listSlots[i]
+          m.scale.set(s.w, s.h, 1)
+          const unis = unisOf(m)
+          unis.uResolution.value.x = s.w
+          unis.uResolution.value.y = s.h
+          m.position.set(bootFlags.curtainFlown ? window.innerWidth : s.x, 0, 0)
+          m.userData.lastX = NaN
+        }
+      }
     }
 
     // ── Phase 4: filter requeue — RP's DECOMPILED list-switch grammar ──
@@ -2049,7 +2071,12 @@ function WebGLGallery(
               m.userData.lastX = NaN
               m.userData.lastY = NaN
             })
-            cbRef.current.onSeq((((nextIdx % N) + N) % N) + 1)
+            // every completed view transition lands the wall at lap-0
+            // TOP — the same visual state as boot, so the odometer reads
+            // 01 (never the conveyor-head value: a fresh landing showing
+            // [35] was the #/list-refresh display bug). Scrolling resumes
+            // the head convention from the first wrap.
+            cbRef.current.onSeq(1)
             // NOTE: deferred pools were absorbed at transition START
             // (offscreen rebind in the fly-in) — handling them here
             // rebound the settled, visible wall (残影). Keep this timer
