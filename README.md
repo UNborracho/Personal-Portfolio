@@ -1,5 +1,7 @@
 # SPIKE HU — Photography Folio
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev)
 [![Vite](https://img.shields.io/badge/Vite_8-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vite.dev)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS_4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
@@ -37,8 +39,8 @@ photo/
   avatar/                                        # INFO-page portrait
 ```
 
-- **thumb** — 720px long edge · q75 → gallery wall (~58KB avg)
-- **full** — 1920px long edge · q78 (q85 for the dark-stage live series) → project pages
+- **thumb** — 960px long edge · q78 → gallery wall
+- **full** — 2560px long edge · q80 (q85 for the dark-stage live series) → project pages
 - EXIF orientation corrected, content-hashed names (immutable caching), stale outputs pruned
 
 ## Quick start
@@ -64,8 +66,6 @@ src/
 scripts/photos.mjs  # photo pipeline (sharp)
 docs/
   animation-spec.md # animation spec, decompiled grammar records (Chinese)
-RULES.md            # working rules distilled from every incident (Chinese)
-product.md          # project navigation doc (Chinese)
 ```
 
 Key knobs live at the top of `src/WebGLGallery.tsx`: `CURVE`, `VEL_TILT`, `MAX_TILT`, `ROW_VEL`, `NUM_CYCLES`, `INTRO_EXPLODE`.
