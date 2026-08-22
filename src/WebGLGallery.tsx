@@ -2276,10 +2276,12 @@ function WebGLGallery(
       texCache.forEach((t) => t?.dispose())
       texCache.clear()
       renderer.dispose()
-      // release the GL context too — dispose alone keeps it alive and
-      // browsers cap live contexts (~8–16); this component remounts on
-      // every project visit and Safari frees contexts lazily
-      renderer.forceContextLoss()
+      // NOTE: no renderer.forceContextLoss() here — React StrictMode
+      // remounts this effect on the SAME canvas within milliseconds; a
+      // force-lost context makes the second WebGLRenderer constructor
+      // crash (getShaderPrecisionFormat returns null on a lost context),
+      // unmounting the whole tree. Dead canvases release their context
+      // via GC anyway; revisit only if profiling shows live-context caps.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
