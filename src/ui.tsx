@@ -18,7 +18,7 @@ export const FINE_POINTER =
 // ── RP hover scramble (decompiled layout.js): ScrambleText, duration
 // 1.2, chars "upperCase", speed 0.1 — letters roll through uppercase
 // noise and re-lock into the original text. Reduced motion: skip.
-export const scrambleOK = !REDUCED_MOTION
+const scrambleOK = !REDUCED_MOTION
 
 export function scrambleIn(e: React.MouseEvent<HTMLElement>) {
   const el = e.currentTarget
