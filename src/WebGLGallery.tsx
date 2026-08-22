@@ -11,16 +11,26 @@ import * as THREE from "three"
 import gsap from "gsap"
 import { shuffled, type WallPhoto } from "./shared"
 import { WALL_SEED, INTRO_EXPLODE, bootFlags } from "./gallery-flags"
-
-// ── Layout constants (tunable) ──────────────────────────────────────────
-const ROWS = 9
-const SLOT_COUNT = 4 * ROWS // max planes allocated; active = ncols × ROWS
-const NUM_CYCLES = 10 // scroll-spacer span (~ "endless")
-const GAP = 24
-const SIDE_MARGIN = 28
-const FOV = 50
-const CURVE = 0.06 // parabolic recede depth (cylinder bend strength)
-const HOVER_HOLD = 2 // frames a candidate must stay stable before hover switches
+import {
+  createSharedUniforms,
+  makeDispTex,
+  patchMaterial,
+  unisOf,
+} from "./gallery/shaders"
+import {
+  SLOT_COUNT,
+  NUM_CYCLES,
+  GAP,
+  SIDE_MARGIN,
+  FOV,
+  HOVER_HOLD,
+  boundW,
+  ncolsFor,
+  computeLayout,
+  stripW,
+  wrapCoordOf,
+  type Layout,
+} from "./gallery/layout"
 
 /** Deterministic wall seed + intro flags live in ./gallery-flags
  *  (kept free of three imports so App can read them without pulling
@@ -95,148 +105,6 @@ interface Props {
    *  (hash cat change / re-seed) — App syncs page scroll + odometer */
   onResetScroll?: () => void
   onPick: (w: WallPhoto) => void
-}
-
-interface Layout {
-  ncols: number // list strip sizing (responsive bucket)
-  colW: number // list slot width base (≈ collage unit)
-  pitch: number // overview row rhythm
-  cycleH: number // overview wrap modulus = rowN × pitch
-  count: number // overview lattice slots (planes beyond stay hidden)
-  rowN: number
-  slots: { x: number; w: number; row: number; depth: number }[]
-}
-
-// ── RP collage lattice (overview) ────────────────────────────────────────
-// Greedy row-packing of seeded-width slots replaces the fixed column
-// grid: rows naturally hold 3–5 photos of differing widths (RP overview
-// look — measured from the reference screenshot: mixed 19–32% widths,
-// ~50px vertical rhythm, interleaved rows, no overlap). The lattice is
-// STATIC (slots own x/w/row; photos flow through them on wrap) so the
-// conveyor semantics are untouched.
-const COL_H_GAP = 0.05 // ×unit horizontal gap between slots in a row
-const ROW_PITCH = 1.5 // ×unit vertical row rhythm
-const ROW_STAGGER = 0.08 // ×pitch seeded per-row vertical offset (±)
-const SLOT_H_CAP = 0.76 // ×pitch max photo height (overlap-safe bound)
-const PHOTO_SCALE = 0.8 // global photo size ≈ ×unit/list-slot width (user: −20%)
-const ROW_BUDGET_LO = 0.88 // per-row width budget floor (×budget)
-const ROW_BUDGET_SWING = 0.2 // seeded budget swing above the floor
-const TAIL_ABSORB_MAX = 0.65 // ×unit max extra width the last slot absorbs
-
-// deterministic lattice rng — same wall, same collage, every visit
-const latHash = (n: number) => {
-  let t = (n + WALL_SEED * 374761393) | 0
-  t = Math.imul(t ^ (t >>> 13), 1274126177)
-  return ((t ^ (t >>> 16)) >>> 0) / 4294967296
-}
-const rowOffsetOf = (row: number, pitch: number) =>
-  (latHash(row * 7919 + 11) - 0.5) * 2 * ROW_STAGGER * pitch
-// per-row z jitter: overlapping planes never share an exact depth →
-// stable occlusion instead of z-fighting stripes
-const zJitterOf = (row: number) =>
-  (row % 2 === 0 ? 1 : -1) * (0.2 + (row % 3) * 0.15)
-// bound a photo's width for its slot: natural width unless the photo's
-// height would exceed the cap (portrait in a wide slot renders smaller,
-// natural aspect preserved — RP never crops in overview)
-const boundW = (slotW: number, ar: number, pitch: number) =>
-  Math.min(slotW, SLOT_H_CAP * pitch * Math.max(ar, 0.4))
-
-// Responsive column count: 2 on phones, 3 on tablets, 4 on desktop.
-function ncolsFor(vw: number) {
-  return vw < 640 ? 2 : vw < 1140 ? 3 : 4
-}
-
-function computeLayout(vw: number, vh: number): Layout {
-  const ncols = ncolsFor(vw)
-  // unit ≈ average photo width → ~4.2 slots per row desktop (RP mix);
-  // PHOTO_SCALE shrinks photos ~20% → more slots per row (denser, fuller)
-  const unit = ((vw - SIDE_MARGIN * 2) / (ncols + 0.35)) * PHOTO_SCALE
-  const pitch = unit * ROW_PITCH
-  const halfSpread = (vw - SIDE_MARGIN * 2) / 2
-  const budget = vw - SIDE_MARGIN * 2
-  const hGap = Math.max(10, unit * COL_H_GAP)
-  const maxCount = ncols <= 2 ? 20 : 36 // mobile keeps the LRU headroom
-  // seeded per-row budget factor → rows hold a varying 4–5 (RP rhythm);
-  // phones clamp the floor so a row never degrades to a lone photo
-  const rowBudget = (r: number) =>
-    budget *
-    ((ncols <= 2 ? 0.92 : ROW_BUDGET_LO) +
-      ROW_BUDGET_SWING * latHash(r * 31 + 5))
-  // pack generously, then cut at the last COMPLETE row that fits the
-  // plane budget — no orphan half-rows in the lattice
-  const all: { x: number; w: number; row: number; depth: number }[] = []
-  let cursor = 0
-  let row = 0
-  // row-closure normalization: ragged LEFT edge, FLUSH right edge (RP).
-  // 1) overshoot (budget factor >1 can push past the edge) → trim tail;
-  // 2) leftover → tail absorbs up to TAIL_ABSORB_MAX;
-  // 3) remainder → spread equally across the row (a few px each — the
-  //    ragged rhythm survives, the dead right margin does not).
-  const closeRow = (rowStart: number) => {
-    const n = all.length - rowStart
-    if (n <= 0) return
-    let last = all[all.length - 1]
-    let right = last.x + last.w / 2
-    if (right > halfSpread) {
-      const shrink = Math.min(right - halfSpread, last.w - 0.5 * unit)
-      last.w -= shrink
-      last.x -= shrink / 2
-      right -= shrink
-    }
-    let leftover = halfSpread - right
-    if (leftover > 0.5) {
-      const absorb = Math.min(leftover, TAIL_ABSORB_MAX * unit)
-      last.w += absorb
-      last.x += absorb / 2
-      leftover -= absorb
-      if (leftover > 0.5) {
-        const d = leftover / n
-        for (let k = rowStart; k < all.length; k++) all[k].w += d
-        let cx = -halfSpread
-        for (let k = rowStart; k < all.length; k++) {
-          all[k].x = cx + all[k].w / 2
-          cx += all[k].w + hGap
-        }
-      }
-    }
-  }
-  for (let i = 0; i < maxCount * 2; i++) {
-    // ~25% portrait-class slots; width jitter ±~17% → ragged organic mix
-    const portrait = latHash(i * 131 + 7) < 0.25
-    const jit = 0.85 + 0.35 * latHash(i * 977 + 3)
-    const w = (portrait ? 0.72 : 1.0) * unit * jit
-    if (cursor > 0 && cursor + w > rowBudget(row)) {
-      closeRow(all.findIndex((s) => s.row === row))
-      cursor = 0
-      row++ // row full → interleave the next one
-    }
-    const x = -halfSpread + cursor + w / 2
-    const xn = x / halfSpread
-    all.push({ x, w, row, depth: CURVE * vw * xn * xn })
-    cursor += w + hGap
-  }
-  // complete-row cut ≤ maxCount
-  const rowTotals = new Map<number, number>()
-  for (const s of all) rowTotals.set(s.row, (rowTotals.get(s.row) ?? 0) + 1)
-  let acc = 0
-  let count = 0
-  let rowN = 0
-  for (let r = 0; r <= row; r++) {
-    acc += rowTotals.get(r) ?? 0
-    if (acc > maxCount) break
-    count = acc
-    rowN = r + 1
-  }
-  const slots = all.slice(0, count)
-  return {
-    ncols,
-    colW: unit,
-    pitch,
-    cycleH: rowN * pitch,
-    count,
-    rowN,
-    slots,
-  }
 }
 
 function WebGLGallery(
@@ -432,176 +300,11 @@ function WebGLGallery(
     let lastNcols = ncolsFor(window.innerWidth)
 
     // ── RP-replication shader foundation ─────────────────────────────
-    // Every animated channel is injected ONCE into the shared material
-    // pipeline (R4: verified against three r185 chunk sources —
-    // project_vertex & map_fragment reproduced verbatim with additions;
-    // every channel is 0 at rest → identity transform, rendering
-    // byte-identical to the plain material).
-    //  - vertex: curtain bend (uSpeed, scroll velocity),
-    //    horizontal ripple (uAnim, pulses)
-    //  - fragment: cover-fit UV (aspect-safe morphing) + displacement
-    //    liquid swirl on hover (uHover)
-    type Uni1 = { value: number }
-    type Uni2 = { value: { x: number; y: number } }
-    type PlaneUnis = {
-      uAnim: Uni1
-      uHover: Uni1
-      uResolution: Uni2
-      uImageRes: Uni2
-    }
-    // single accessor for the per-plane shader uniform bundle (was an
-    // 8-site `material as … userData.unis as PlaneUnis` cast chain)
-    const unisOf = (m: THREE.Mesh) =>
-      (m.material as THREE.MeshBasicMaterial).userData.unis as PlaneUnis
-    const shared = {
-      uTime: { value: 0 } as Uni1,
-      uSpeed: { value: 0 } as Uni1,
-      uBreath: { value: 0 } as Uni1,
-      uAxis: { value: 0 } as Uni1, // 0 = vertical conveyor bend (fn of y), 1 = filmstrip bend (fn of x)
-      uViewport: { value: { x: vw, y: vh } } as Uni2,
-      uDispMap: { value: null as THREE.Texture | null },
-    }
-    // displacement field for the hover swirl — code-generated value
-    // noise (no asset): r/g = displacement vector, sampled by the shader
-    const DISP_N = 128
-    const dispData = new Uint8Array(DISP_N * DISP_N * 4)
-    const hash2 = (x: number, y: number) => {
-      const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453
-      return n - Math.floor(n)
-    }
-    const vnoise = (x: number, y: number, cells: number) => {
-      const gx = (x / DISP_N) * cells
-      const gy = (y / DISP_N) * cells
-      const ix = Math.floor(gx)
-      const iy = Math.floor(gy)
-      const fx = gx - ix
-      const fy = gy - iy
-      const sx = fx * fx * (3 - 2 * fx)
-      const sy = fy * fy * (3 - 2 * fy)
-      const a = hash2(ix, iy)
-      const b = hash2(ix + 1, iy)
-      const c = hash2(ix, iy + 1)
-      const d = hash2(ix + 1, iy + 1)
-      return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
-    }
-    for (let y = 0; y < DISP_N; y++) {
-      for (let x = 0; x < DISP_N; x++) {
-        const v = (vnoise(x, y, 6) * 2 + vnoise(x, y, 13)) / 3
-        const o = (y * DISP_N + x) * 4
-        dispData[o] = dispData[o + 1] = v * 255
-        dispData[o + 2] = 128
-        dispData[o + 3] = 255
-      }
-    }
-    const dispTex = new THREE.DataTexture(dispData, DISP_N, DISP_N)
-    dispTex.wrapS = dispTex.wrapT = THREE.RepeatWrapping
-    dispTex.minFilter = THREE.LinearFilter
-    dispTex.generateMipmaps = false
-    dispTex.needsUpdate = true
+    // (types + GLSL patch live in ./gallery/shaders — shared material
+    //  pipeline, per-plane uniform bundle, displacement texture)
+    const shared = createSharedUniforms(vw, vh)
+    const dispTex = makeDispTex()
     shared.uDispMap.value = dispTex
-
-    const patchMaterial = (mat: THREE.MeshBasicMaterial) => {
-      const unis: PlaneUnis = {
-        uAnim: { value: 0 },
-        uHover: { value: 0 },
-        uResolution: { value: { x: 1, y: 1 } },
-        uImageRes: { value: { x: 1, y: 1 } },
-      }
-      mat.userData.unis = unis
-      mat.customProgramCacheKey = () => "rp-v1"
-      mat.onBeforeCompile = (shader) => {
-        Object.assign(shader.uniforms, shared, unis)
-        shader.vertexShader = shader.vertexShader
-          .replace(
-            "#include <common>",
-            `#include <common>
-            uniform float uTime;
-            uniform float uSpeed;
-            uniform float uBreath;
-            uniform vec2 uViewport;
-            uniform float uAnim;
-            uniform float uAxis;`,
-          )
-          .replace(
-            "#include <project_vertex>",
-            // r185 project_vertex VERBATIM (batching/instancing guards kept)
-            // with the RP additions inserted BEFORE gl_Position — after the
-            // include would be a no-op (mvPosition already consumed).
-            `vec4 mvPosition = vec4( transformed, 1.0 );
-            #ifdef USE_BATCHING
-              mvPosition = batchingMatrix * mvPosition;
-            #endif
-            #ifdef USE_INSTANCING
-              mvPosition = instanceMatrix * mvPosition;
-            #endif
-            mvPosition = modelViewMatrix * mvPosition;
-            // RP curtain bend + curl wave, re-axed for our VERTICAL
-            // conveyor: RP scrolls horizontally and wraps around a
-            // VERTICAL axis (function of x); we scroll vertically so the
-            // drum wraps around a HORIZONTAL axis (function of y).
-            // Pure function of position → wrap-seam photos at the same y
-            // get the same z (no pop at the recycling seam).
-            // RP curtain bend: the drum wraps around a horizontal axis in
-            // overview (function of y) and RP's original vertical axis in
-            // list (function of x) — uAxis mixes the coordinate, mix(a,b,0)
-            // is exactly a, so overview stays byte-identical.
-            float rpBendCoord = mix( mvPosition.y / uViewport.y, mvPosition.x / uViewport.x, uAxis );
-            mvPosition.z += cos( rpBendCoord * PI * 1.8 ) * uSpeed;
-            mvPosition.x += cos( mvPosition.y + uTime * 5.0 ) * 0.3 * uAnim;
-            // RP idle breathing: every photo bobs on cos(localY + t)
-            // (their term: cos(p.y+t)*1.5*0.09*0.2 ≈ 2.7% of a photo)
-            mvPosition.z += cos( position.y + uTime ) * uBreath;
-            gl_Position = projectionMatrix * mvPosition;`,
-          )
-        shader.fragmentShader = shader.fragmentShader
-          .replace(
-            "#include <common>",
-            `#include <common>
-            uniform float uHover;
-            uniform vec2 uResolution;
-            uniform vec2 uImageRes;
-            uniform sampler2D uDispMap;
-            mat2 rot2( float a ) { float s = sin( a ); float c = cos( a ); return mat2( c, -s, s, c ); }
-            // cover-fit UV (rs==ri → identity): a plane can morph to any
-            // target size without stretching the photo (RP CoverUV)
-            vec2 coverUv( vec2 u, vec2 s, vec2 i ) {
-              float rs = s.x / s.y;
-              float ri = i.x / i.y;
-              vec2 st = rs < ri ? vec2( i.x * s.y / i.y, s.y ) : vec2( s.x, i.y * s.x / i.x );
-              vec2 o = ( rs < ri ? vec2( ( st.x - s.x ) / 2.0, 0.0 ) : vec2( 0.0, ( st.y - s.y ) / 2.0 ) ) / st;
-              return u * s / st + o;
-            }`,
-          )
-          .replace(
-            "#include <map_fragment>",
-            // r185 map_fragment restructured: CoverUV + ±45°/-135°
-            // displacement samples crossfaded by uHover (RP liquid
-            // hover; amplitude 0.6 = RP's 0.4 × 1.5 — user-directed
-            // strengthening 2026-08-20; the two rotations are RP
-            // constants). RP semantics: pos1 ramps WITH uHover, pos2
-            // ramps with (1 - uHover) and the mix crossfades — at BOTH
-            // endpoints the SHOWN sample is undistorted, so the liquid
-            // wave is TRANSIENT: it peaks mid-transition and a HELD
-            // hover settles crisp. (An earlier build made both amplitudes
-            // follow uHover — a held hover froze at full melt: the
-            // “扭曲后不恢复原样” bug. Do not “fix” this back.)
-            // uHover=0 or 1 → shown sample = texture(map, cuv) exactly.
-            `#ifdef USE_MAP
-              vec4 sampledDiffuseColor = vec4( 0.0 );
-              vec2 cuv = coverUv( vMapUv, uResolution, uImageRes );
-              vec2 disp = texture2D( uDispMap, cuv ).rg;
-              vec2 pos1 = cuv + rot2( PI * 0.25 ) * disp * 0.6 * uHover;
-              vec2 pos2 = cuv + rot2( -PI * 0.75 ) * disp * 0.6 * ( 1.0 - uHover );
-              sampledDiffuseColor = mix( texture2D( map, pos1 ), texture2D( map, pos2 ), uHover );
-              #ifdef DECODE_VIDEO_TEXTURE
-                sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
-              #endif
-              diffuseColor *= sampledDiffuseColor;
-            #endif`,
-          )
-      }
-    }
-
     const planes: THREE.Mesh[] = []
     for (let i = 0; i < SLOT_COUNT; i++) {
       const mat = new THREE.MeshBasicMaterial({
@@ -620,7 +323,7 @@ function WebGLGallery(
         opacity: 0,
         color: 0xffffff,
       })
-      patchMaterial(mat)
+      patchMaterial(mat, shared)
       const mesh = new THREE.Mesh(geo, mat)
       mesh.visible = false
       mesh.userData = {
@@ -637,18 +340,19 @@ function WebGLGallery(
 
     const evictIfNeeded = () => {
       while (texCache.size > MAX_TEX) {
+        // bound keys, as a Set, built once per call (was a
+        // planes.some(...) probe per candidate — O(P×planes) per sweep)
+        const bound = new Set<string>()
+        for (const m of planes) {
+          const w = m.userData.wp as WallPhoto | null
+          if (w) bound.add(w.photo.thumb)
+        }
         // oldest entry that is not currently bound to a visible plane
         let oldestKey: string | null = null
         let oldestAge = Infinity
         for (const [k, t] of texCache) {
           if (!t) continue // still loading
-          if (
-            planes.some(
-              (m) =>
-                m.userData.wp && (m.userData.wp as WallPhoto).photo.thumb === k,
-            )
-          )
-            continue
+          if (bound.has(k)) continue
           const age = texAge.get(k) ?? Infinity
           if (age < oldestAge) {
             oldestAge = age
@@ -688,12 +392,18 @@ function WebGLGallery(
     //    This holds even for code paths nobody has found yet.
     const imgCache = new Map<string, HTMLImageElement>()
     let introLocked = true
-    const texFromImage = (img: HTMLImageElement) => {
-      const tex = new THREE.Texture(img)
+    // texture config quartet shared by both load paths (decoded-
+    // source <img> and TextureLoader network loads) — sRGB + mips +
+    // anisotropy so every photo on the wall samples identically
+    const configureTex = (tex: THREE.Texture) => {
       tex.colorSpace = THREE.SRGBColorSpace
       tex.generateMipmaps = true
       tex.minFilter = THREE.LinearMipmapLinearFilter
       tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
+    }
+    const texFromImage = (img: HTMLImageElement) => {
+      const tex = new THREE.Texture(img)
+      configureTex(tex)
       tex.needsUpdate = true
       return tex
     }
@@ -707,6 +417,23 @@ function WebGLGallery(
       }
     }
 
+    // straggler handoff: a texture just arrived for `key` — bind every
+    // plane waiting on it (preserve the crossfade stagger it was
+    // assigned — late arrivals fade too, instead of popping in fully
+    // opaque). Boot-stack case: the texture arrived while the intro
+    // curtain is still up — the plane joins the center stack (150px
+    // square) instead of popping in at its lattice slot.
+    const handoff = (key: string) => {
+      for (const m of planes) {
+        if (
+          m.userData.want &&
+          (m.userData.want as WallPhoto).photo.thumb === key
+        ) {
+          bindPlane(m, m.userData.want as WallPhoto)
+          if (bootParked) parkOne(m)
+        }
+      }
+    }
     const ensureTex = (wp: WallPhoto) => {
       const key = wp.photo.thumb
       if (texCache.has(key)) {
@@ -721,18 +448,7 @@ function WebGLGallery(
         texAge.set(key, texClock++)
         queueUpload(tex)
         evictIfNeeded()
-        for (const m of planes) {
-          if (
-            m.userData.want &&
-            (m.userData.want as WallPhoto).photo.thumb === key
-          ) {
-            bindPlane(m, m.userData.want as WallPhoto)
-            // boot-stack straggler: the texture arrived while the intro
-            // curtain is still up — the plane joins the center stack
-            // (150px square) instead of popping in at its lattice slot
-            if (bootParked) parkOne(m)
-          }
-        }
+        handoff(key)
         return
       }
       texCache.set(key, null) // loading marker
@@ -744,28 +460,11 @@ function WebGLGallery(
             tex.dispose()
             return
           }
-          tex.colorSpace = THREE.SRGBColorSpace
-          tex.generateMipmaps = true
-          tex.minFilter = THREE.LinearMipmapLinearFilter
-          tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
+          configureTex(tex)
           texCache.set(key, tex)
           queueUpload(tex) // GPU upload at idle, not mid-scroll
           evictIfNeeded()
-          // hand it to any plane waiting on this photo (preserve the
-          // crossfade stagger it was assigned — late arrivals fade too,
-          // instead of popping in fully opaque)
-          for (const m of planes) {
-            if (
-              m.userData.want &&
-              (m.userData.want as WallPhoto).photo.thumb === key
-            ) {
-              bindPlane(m, m.userData.want as WallPhoto)
-              // boot-stack straggler: the texture arrived while the intro
-              // curtain is still up — the plane joins the center stack
-              // (150px square) instead of popping in at its lattice slot
-              if (bootParked) parkOne(m)
-            }
-          }
+          handoff(key)
         },
         undefined,
         (err) => {
@@ -863,12 +562,8 @@ function WebGLGallery(
     ).matches
     let hoverPlane: THREE.Mesh | null = null
     const meltTo = (m: THREE.Mesh, v: number) => {
+      if (REDUCED) return snapMelt(m)
       const unis = unisOf(m)
-      if (REDUCED) {
-        gsap.killTweensOf(unis.uHover)
-        unis.uHover.value = 0
-        return
-      }
       gsap.killTweensOf(unis.uHover) // new tween starts from current value
       gsap.to(unis.uHover, { value: v, duration: 1.2, ease: "expo.out" })
     }
@@ -876,6 +571,31 @@ function WebGLGallery(
       const unis = unisOf(m)
       gsap.killTweensOf(unis.uHover)
       unis.uHover.value = 0
+    }
+
+    // load fade-in tween shared by both bindPlane fade paths (first
+    // fill + swap fuse): starts fully hidden, fades to opaque on the
+    // given clock, then hands the plane back to opaque draw state.
+    // `transitioning` counts these in-flight fades — it gates the
+    // render loop's idle path.
+    const fadeIn = (
+      mat: THREE.MeshBasicMaterial,
+      dur: number,
+      ease: string,
+    ) => {
+      gsap.killTweensOf(mat)
+      mat.transparent = true
+      mat.opacity = 0 // cell was blank / mid-swap — start fully hidden
+      transitioning++
+      gsap.to(mat, {
+        opacity: 1,
+        duration: dur,
+        ease,
+        onComplete: () => {
+          mat.transparent = false
+          transitioning--
+        },
+      })
     }
 
     const bindPlane = (
@@ -893,6 +613,14 @@ function WebGLGallery(
       mesh.userData.want = null
       mesh.userData.wp = wp
       mesh.userData.ar = wp.photo.w / wp.photo.h
+      // cache the overview slot's bound width for this photo (boundW is
+      // pure per-slot math that only changes on rebind / relayout — the
+      // tick reads mesh.userData.bw instead of recomputing per frame)
+      const slCur = layoutRef.current.slots[(mesh.userData.slot as number)]
+      mesh.userData.bw =
+        slCur !== undefined
+          ? boundW(slCur.w, wp.photo.w / wp.photo.h, layoutRef.current.pitch)
+          : undefined
       const mat = mesh.material as THREE.MeshBasicMaterial
       const prevMap = mat.map // BEFORE the swap — the fuse below compares it
       const firstLoad = prevMap === null
@@ -908,7 +636,7 @@ function WebGLGallery(
       mat.needsUpdate = true
       mesh.visible = true
       // cover-fit math needs the texture's own aspect ratio
-      const unis = mat.userData.unis as PlaneUnis
+      const unis = unisOf(mesh)
       unis.uImageRes.value.x = wp.photo.w
       unis.uImageRes.value.y = wp.photo.h
       // hover-melt hygiene on rebind: the hovered plane keeps its melt
@@ -929,38 +657,14 @@ function WebGLGallery(
       } else if (firstLoad) {
         // fade in on first fill only; wrap/requeue rebinds keep full
         // opacity (the spatial choreography owns the transition)
-        mat.transparent = true
-        mat.opacity = 0 // cell was blank — new photo starts fully hidden
-        gsap.killTweensOf(mat)
-        transitioning++
-        gsap.to(mat, {
-          opacity: 1,
-          duration: 0.45,
-          ease: "power2.inOut",
-          onComplete: () => {
-            mat.transparent = false
-            transitioning--
-          },
-        })
+        fadeIn(mat, 0.45, "power2.inOut")
       } else if (prevMap !== tex) {
         // texture SWAP (rebind to a different photo while visible):
         // micro crossfade as a timing-hole fuse — even if a future path
         // rebinds onscreen, the photo morphs softly instead of flashing
         // (the 残影 bug class). Invisible in the choreographed paths:
         // those rebind offscreen, where a 0.15s fade is imperceptible.
-        gsap.killTweensOf(mat)
-        mat.transparent = true
-        mat.opacity = 0
-        transitioning++
-        gsap.to(mat, {
-          opacity: 1,
-          duration: 0.15,
-          ease: "power1.inOut",
-          onComplete: () => {
-            mat.transparent = false
-            transitioning--
-          },
-        })
+        fadeIn(mat, 0.15, "power1.inOut")
       } else {
         gsap.killTweensOf(mat)
         mat.transparent = false
@@ -979,6 +683,8 @@ function WebGLGallery(
       lastNcols = ncolsFor(w)
       layoutRef.current = computeLayout(w, h)
       setCycleH(layoutRef.current.cycleH)
+      // slot widths / pitch changed → the per-plane boundW cache is stale
+      for (const m of planes) m.userData.bw = undefined
       // curtain bend math is normalized by the viewport size in world units
       shared.uViewport.value.x = w
       shared.uViewport.value.y = h
@@ -1010,6 +716,24 @@ function WebGLGallery(
     let introFlown = false
     // stack ONE plane at the center (shared by parkStack and the
     // late-texture straggler path in ensureTex)
+    // scale + cover-fit ratio move TOGETHER (uResolution must mirror the
+    // plane's onscreen size or CoverUV crops wrong) — one invariant, one
+    // helper, every site that sizes a plane
+    const setSize = (m: THREE.Mesh, w: number, h: number) => {
+      m.scale.set(w, h, 1)
+      const res = unisOf(m).uResolution.value
+      res.x = w
+      res.y = h
+    }
+
+    // NaN sentinels force the wrap detection to re-capture cleanly when
+    // layout resumes (NaN never compares true → no phantom rebind) —
+    // shared by wave completions and parks
+    const nanXY = (m: THREE.Mesh) => {
+      m.userData.lastX = NaN
+      m.userData.lastY = NaN
+    }
+
     const parkOne = (m: THREE.Mesh) => {
       const count = layoutRef.current.count
       const i = planes.indexOf(m)
@@ -1024,12 +748,8 @@ function WebGLGallery(
       // depthWrite:false occlusion IS draw order — deterministic stack
       m.position.set(0, 0, (count - i) * 0.01)
       m.renderOrder = count - i
-      m.scale.set(150, 150, 1)
-      const unis = unisOf(m)
-      unis.uResolution.value.x = 150
-      unis.uResolution.value.y = 150
-      m.userData.lastX = NaN
-      m.userData.lastY = NaN
+      setSize(m, 150, 150)
+      nanXY(m)
     }
     const parkStack = () => {
       const L = layoutRef.current
@@ -1055,12 +775,8 @@ function WebGLGallery(
         const arv = m.userData.ar as number
         const w = boundW(sl.w, arv, L.pitch)
         m.position.set(1.2 * window.innerWidth, 0, 0)
-        m.scale.set(w, w / arv, 1)
-        const unis = unisOf(m)
-        unis.uResolution.value.x = w
-        unis.uResolution.value.y = w / arv
-        m.userData.lastX = NaN
-        m.userData.lastY = NaN
+        setSize(m, w, w / arv)
+        nanXY(m)
       }
       bootParked = true
     }
@@ -1113,26 +829,41 @@ function WebGLGallery(
     // Size rule (RP): landscape (ar ≥ 1.1) → colW×0.96, row-shaped →
     // colW×0.77 (colW = unit, already PHOTO_SCALEd); height = width/ar;
     // every photo shares the y=0 center line.
-    let listSlots: { x: number; w: number; h: number }[] = []
+    // one strip slot: center x + cover-fit w/h on the y=0 center line
+    interface ListSlot {
+      x: number
+      w: number
+      h: number
+    }
+    let listSlots: ListSlot[] = []
     let listTW = 0 // one lap of the strip (Σ widths + GAP×count)
-    const computeListLayout = () => {
+    // the strip geometry itself, from a photo list (shared by the live
+    // layout and the requeue's target row — ONE cumulative-widths loop).
+    // Sizes come from the photo DEFINING the slot (rowWp — set at seed /
+    // requeue; frozen through wraps so slot geometry never moves under a
+    // conveyor rebind).
+    const stripSlots = (photos: (WallPhoto | null)[]): WaveTarget[] => {
       const L = layoutRef.current
-      const count = L.count
       const left = -window.innerWidth / 2 + SIDE_MARGIN
       let sum = 0
-      listSlots = []
-      for (let i = 0; i < count; i++) {
-        // size from the photo DEFINING the slot (rowWp — set at seed /
-        // requeue; frozen through wraps so slot geometry never moves
-        // under a conveyor rebind)
-        const wpt = rowWp[i] ?? null
+      const out: WaveTarget[] = []
+      for (let i = 0; i < photos.length; i++) {
+        const wpt = photos[i] ?? null
         const ar = wpt ? wpt.photo.w / wpt.photo.h : 1
-        const w = ar >= 1.1 ? L.colW * 0.96 : L.colW * 0.77
-        const h = w / ar
-        listSlots.push({ x: left + w / 2 + sum + GAP * i, w, h })
+        const w = stripW(ar, L.colW)
+        out.push({
+          wp: wpt as WallPhoto,
+          x: left + w / 2 + sum + GAP * i,
+          w,
+          h: w / ar,
+        })
         sum += w
       }
-      listTW = sum + GAP * count
+      listTW = sum + GAP * photos.length
+      return out
+    }
+    const computeListLayout = () => {
+      listSlots = stripSlots(rowWp.slice(0, layoutRef.current.count))
     }
 
     // list-mode seed: build a fresh strip roster from the lap-0
@@ -1186,13 +917,227 @@ function WebGLGallery(
         for (let i = 0; i < count; i++) {
           const m = rowPlanes[i]
           const s = listSlots[i]
-          m.scale.set(s.w, s.h, 1)
-          const unis = unisOf(m)
-          unis.uResolution.value.x = s.w
-          unis.uResolution.value.y = s.h
+          setSize(m, s.w, s.h)
           m.position.set(bootFlags.curtainFlown ? window.innerWidth : s.x, 0, 0)
           m.userData.lastX = NaN
         }
+      }
+    }
+
+    // ── shared wave grammar (requeue + view transition) ──────────────
+    // Both waves speak RP's ONE-clock grammar (decompiled lazy816.js —
+    // full rationale banners at each call site). These helpers are the
+    // single implementation of the three blocks the waves used to
+    // duplicate: the roster classifier, the position/scale/uResolution
+    // flight triple, and the exits + offscreen-probe + entrant-revival
+    // block. The waves differ ONLY in parameters (delays, hero clocks,
+    // tracking), never in grammar — parameterize, never erase.
+    const RP_DUR = 1.4
+    const RP_EASE = "power3.inOut"
+    // RP chains scale/uResolution AFTER position (timeline "<" +
+    // per-tween delay), each 0.618s = gsap's global 1/φ default — the
+    // CoverUV reframe TRAILS the position landing
+    const RP_SUB_DUR = 0.618
+
+    // flight target: list waves omit y/z (strip center line, park is
+    // preset to y=z=0); overview morphs fly the full triple
+    interface WaveTarget {
+      wp: WallPhoto
+      x: number
+      w: number
+      h: number
+      y?: number
+      z?: number
+    }
+    // one chained tween clock: duration + delay (+ optional ease
+    // override — VT's hero chain; everything else is RP_EASE)
+    interface Clock {
+      dur: number
+      delay: number
+      ease?: string
+    }
+    const ck = (dur: number, delay: number, ease?: string): Clock => ({
+      dur,
+      delay,
+      ease,
+    })
+
+    // (a) roster classifier — planes are classified by stable photo key
+    // (thumb), never by slot index; mid-flight states classify against
+    // the TARGET so rapid clicks converge. `sources` = planes that may
+    // already hold a target photo. Hidden non-matching sources become
+    // idle carriers (view transition); requeue instead passes the
+    // hidden NON-ROW planes as a separate idlePool (its sources are the
+    // whole current row — hidden row planes still exit, not idle).
+    const classifyRoster = (
+      sources: THREE.Mesh[],
+      keys: string[],
+      idlePool: THREE.Mesh[] | null,
+    ) => {
+      const usedT = new Set<number>()
+      const newRoster: (THREE.Mesh | null)[] = new Array(keys.length).fill(null)
+      const nonSurvivors: THREE.Mesh[] = []
+      const idle: THREE.Mesh[] = []
+      for (const m of sources) {
+        const wpt = (m.userData.want ?? m.userData.wp) as WallPhoto | null
+        const key = wpt?.photo.thumb ?? null
+        const ti = key ? keys.indexOf(key) : -1
+        if (ti >= 0 && !usedT.has(ti)) {
+          usedT.add(ti)
+          newRoster[ti] = m
+        } else if (idlePool === null && !m.visible) idle.push(m)
+        else nonSurvivors.push(m)
+      }
+      if (idlePool) idle.push(...idlePool)
+      // carriers for entering photos: hidden surplus planes first, then
+      // re-purposed ex-leavers; any surplus left flies out as leavers
+      const open = keys.map((_, ti) => ti).filter((ti) => !usedT.has(ti))
+      const carriers = idle.slice(0, open.length)
+      const rePurposed = nonSurvivors.slice(
+        0,
+        Math.max(0, open.length - carriers.length),
+      )
+      open.forEach((ti, k) => {
+        const m = carriers[k] ?? rePurposed[k - carriers.length]
+        if (m) newRoster[ti] = m
+      })
+      return { usedT, newRoster, nonSurvivors, carriers, rePurposed }
+    }
+
+    // (b) flight triple — position on the wave clock, then the chained
+    // scale/uResolution clocks. `xOnly` animates x alone (entrant
+    // flights start from the y=z=0 right-edge park — position was
+    // preset). `track` collects tweens for a wave's kill() (view
+    // transition); null = untracked (requeue waves die by generation
+    // counter + killTweensOf).
+    const flyTo = (
+      track: gsap.core.Tween[] | null,
+      m: THREE.Mesh,
+      t: WaveTarget,
+      pos: Clock & { xOnly?: boolean },
+      size: Clock,
+      res: Clock,
+    ) => {
+      const posTween = gsap.to(
+        m.position,
+        pos.xOnly
+          ? { x: t.x, duration: pos.dur, ease: RP_EASE, delay: pos.delay }
+          : {
+              x: t.x,
+              y: t.y ?? 0,
+              z: t.z ?? 0,
+              duration: pos.dur,
+              ease: RP_EASE,
+              delay: pos.delay,
+            },
+      )
+      const sizeTween = gsap.to(m.scale, {
+        x: t.w,
+        y: t.h,
+        duration: size.dur,
+        ease: size.ease ?? RP_EASE,
+        delay: size.delay,
+      })
+      const resTween = gsap.to(unisOf(m).uResolution.value, {
+        x: t.w,
+        y: t.h,
+        duration: res.dur,
+        ease: res.ease ?? RP_EASE,
+        delay: res.delay,
+      })
+      if (track) track.push(posTween, sizeTween, resTween)
+    }
+
+    // (c) exits + offscreen probe + entrant revival. Leavers AND
+    // borrowed carriers share the leaver flight — nearest edge by x
+    // sign (RP: `x<=0 ? -I.width : I.width`), immediate, one clock.
+    // Borrowed carriers carry an OFFSCREEN PROBE: the moment a carrier
+    // passes fully invisible (center beyond the screen edge by half
+    // its width), its exit freezes, it teleports to the RIGHT-edge
+    // park (+vw — RP's universal entrant start; the teleport happens
+    // while invisible, zero artifact risk), rebinds instantly opaque,
+    // and flies to its slot with ALL remaining time — same path, same
+    // easing, same ~1.9s landing as RP's parked-mesh entrants. `alive`
+    // guards stale callbacks (requeue generation counter / VT killed
+    // flag). `exitClearsRow`: requeue leavers drop inRow/rowIdx;
+    // view-transition ownership was settled at wave start. `enterFull`:
+    // view-transition entrants fly the full x/y/z triple (overview
+    // morph), requeue entrants x-only (strip center line).
+    const flyExits = (o: {
+      nonSurvivors: THREE.Mesh[]
+      newRoster: (THREE.Mesh | null)[]
+      usedT: Set<number>
+      targetAt: (ti: number) => WaveTarget
+      moveDelay: number
+      sDel: number
+      rDel: number
+      alive: () => boolean
+      track: gsap.core.Tween[] | null
+      exitClearsRow: boolean
+      enterFull: boolean
+    }) => {
+      const vw = window.innerWidth
+      const waveT0 = performance.now() / 1000
+      const enterAt = (m: THREE.Mesh, ti: number) => {
+        if (!o.alive()) return // superseded — new wave owns m
+        const t = o.targetAt(ti)
+        m.position.set(vw, 0, 0) // RP's universal entrant park (+I.width)
+        bindPlane(m, t.wp, true) // offscreen: instant opaque rebind
+        m.visible = true
+        const elapsed = performance.now() / 1000 - waveT0
+        // land with everyone: moveDelay + RP_DUR from wave start; chained
+        // clocks absolute when still in the future, ASAP once passed
+        // (the plane was invisible)
+        flyTo(
+          o.track,
+          m,
+          t,
+          {
+            dur: Math.max(0.35, o.moveDelay + RP_DUR - elapsed),
+            delay: 0,
+            xOnly: !o.enterFull,
+          },
+          ck(RP_SUB_DUR, Math.max(0.05, o.sDel - elapsed)),
+          ck(RP_SUB_DUR, Math.max(0.1, o.rDel - elapsed)),
+        )
+      }
+      for (const m of o.nonSurvivors) {
+        const dir = m.position.x <= 0 ? -1 : 1
+        const ti = o.newRoster.indexOf(m)
+        const borrowedEnterer = ti >= 0 && !o.usedT.has(ti)
+        // fully-invisible threshold: near edge past the screen edge
+        const offAt = dir * (vw / 2 + Math.abs(m.scale.x) / 2 + 4)
+        const state = { crossed: false }
+        const tw = gsap.to(m.position, {
+          x: dir * vw, // RP: ±I.width (the edge — no 1.5× overshoot)
+          duration: RP_DUR,
+          ease: RP_EASE,
+          onComplete: () => {
+            if (!o.alive()) return
+            if (borrowedEnterer) {
+              // belt: the target lies beyond the threshold, so the
+              // probe always fires first — kept for safety only
+              if (!state.crossed) enterAt(m, ti)
+              return
+            }
+            if (o.exitClearsRow) {
+              m.userData.inRow = false
+              m.userData.rowIdx = undefined
+            }
+            m.visible = false
+            snapMelt(m) // never flash a melted edge (spec §5)
+            m.position.x = vw // RP parks hidden photos at the right
+            // edge — the next wave's entrants all emerge from the right
+          },
+        })
+        tw.eventCallback("onUpdate", () => {
+          if (!borrowedEnterer || state.crossed) return
+          if (dir * m.position.x < dir * offAt) return // still partly visible
+          state.crossed = true
+          tw.kill() // freeze the exit at the invisible threshold
+          enterAt(m, ti)
+        })
+        if (o.track) o.track.push(tw)
       }
     }
 
@@ -1225,46 +1170,20 @@ function WebGLGallery(
       setHover(null, null)
 
       // target row: cumulative widths, 0.96/0.77 size rhythm (Phase 3 §2)
-      const left = -vw / 2 + SIDE_MARGIN
-      let sum = 0
-      const targets: { wp: WallPhoto; x: number; w: number; h: number }[] = []
-      for (let i = 0; i < count; i++) {
-        const wp = seq[i % N]
-        const ar = wp.photo.w / wp.photo.h
-        const w = ar >= 1.1 ? L.colW * 0.96 : L.colW * 0.77
-        targets.push({ wp, x: left + w / 2 + sum + GAP * i, w, h: w / ar })
-        sum += w
-      }
+      // — same stripSlots math the live layout uses, so wave targets and
+      // the tick's exact-slot writes can never diverge
+      const targets = stripSlots(
+        Array.from({ length: count }, (_, i) => seq[i % N]),
+      )
 
       // classify the CURRENT roster by photo key (mid-flight states
-      // classify against the target — rapid clicks converge)
-      const usedT = new Set<number>()
-      const newRoster: (THREE.Mesh | null)[] = new Array(count).fill(null)
-      const nonSurvivors: THREE.Mesh[] = []
-      for (const m of rowPlanes) {
-        const wpt = (m.userData.want ?? m.userData.wp) as WallPhoto | null
-        const key = wpt?.photo.thumb ?? null
-        const ti = key ? targets.findIndex((t) => t.wp.photo.thumb === key) : -1
-        if (ti >= 0 && !usedT.has(ti)) {
-          usedT.add(ti)
-          newRoster[ti] = m
-        } else nonSurvivors.push(m)
-      }
-      const open = targets
-        .map((t, ti) => ({ t, ti }))
-        .filter(({ ti }) => !usedT.has(ti))
-      // carriers for entering photos: hidden surplus planes first, then
-      // re-purposed ex-leavers; any surplus left flies out as leavers
-      const idle = planes.filter((m) => !rowPlanes.includes(m) && !m.visible)
-      const carriers = idle.slice(0, open.length)
-      const rePurposed = nonSurvivors.slice(
-        0,
-        Math.max(0, open.length - carriers.length),
+      // classify against the target — rapid clicks converge); carriers:
+      // hidden surplus NON-ROW planes first, then re-purposed ex-leavers
+      const { usedT, newRoster, nonSurvivors, rePurposed } = classifyRoster(
+        rowPlanes,
+        targets.map((t) => t.wp.photo.thumb),
+        planes.filter((m) => !rowPlanes.includes(m) && !m.visible),
       )
-      open.forEach(({ ti }, k) => {
-        const m = carriers[k] ?? rePurposed[k - carriers.length]
-        if (m) newRoster[ti] = m
-      })
 
       // ── RP filter-switch grammar (DECOMPILED from richardprescott.com
       // lazy816.js “function w”, 2026-08-18 — supersedes both the earlier
@@ -1277,56 +1196,34 @@ function WebGLGallery(
       // edge park (RP parks every hidden photo at +I.width) — all of
       // them fly in right→left with the conveyor. Everything lands
       // together at ~1.9s. Plane-pool probe: borrowed carriers rebind
-      // the instant they pass fully offscreen (see exits below), so
-      // their entry keeps the longest possible flight.
-      const DUR = 1.4
-      const EASE = "power3.inOut"
-      const MOVE_DELAY = 0.5
-      // RP chains scale/uResolution AFTER position (timeline "<" +
-      // per-tween delay): position @0.5, scale @1.0, uResolution @1.5,
-      // each 0.618s (gsap's global 1/φ default) — the CoverUV reframe
-      // TRAILS the position landing
-      const SUB_DUR = 0.618
-      const S_DEL = MOVE_DELAY + 0.5
-      const R_DEL = MOVE_DELAY + 1.0
+      // the instant they pass fully offscreen (flyExits), so their
+      // entry keeps the longest possible flight.
+      const MOVE_DELAY = 0.5 // RP: `-1!==v ? .5 : 0`
+      const S_DEL = MOVE_DELAY + 0.5 // scale @1.0
+      const R_DEL = MOVE_DELAY + 1.0 // uResolution @1.5
       newRoster.forEach((m, ti) => {
         if (!m) return
         const t = targets[ti]
-        const unis = unisOf(m)
         m.userData.inRow = true
         m.userData.rowIdx = ti
         if (usedT.has(ti)) {
           // survivor: slide to the closing-rank slot on the kept clock
           // (scale/uResolution ride the same clock — CoverUV reframes)
           m.visible = true // parked leavers reclassified as survivors
-          gsap.to(m.position, {
-            x: t.x,
-            y: 0,
-            z: 0,
-            duration: DUR,
-            ease: EASE,
-            delay: MOVE_DELAY,
-          })
-          gsap.to(m.scale, {
-            x: t.w,
-            y: t.h,
-            duration: SUB_DUR,
-            ease: EASE,
-            delay: S_DEL,
-          })
-          gsap.to(unis.uResolution.value, {
-            x: t.w,
-            y: t.h,
-            duration: SUB_DUR,
-            ease: EASE,
-            delay: R_DEL,
-          })
+          flyTo(
+            null,
+            m,
+            t,
+            ck(RP_DUR, MOVE_DELAY),
+            ck(RP_SUB_DUR, S_DEL),
+            ck(RP_SUB_DUR, R_DEL),
+          )
         } else {
           // entrant: RP parks EVERY hidden photo at the right edge
           // (+I.width) — entrants always fly in right→left with the
           // conveyor, never alternating sides. Borrowed carriers are
           // ONSCREEN (desktop: the row uses every plane but one): the
-          // offscreen probe on their exit flight (below) owns their
+          // offscreen probe on their exit flight (flyExits) owns their
           // park+rebind+entry. RP has one mesh per photo, parked and
           // waiting — no borrowing, no probe needed there.
           const borrowed = rePurposed.includes(m)
@@ -1335,110 +1232,37 @@ function WebGLGallery(
             // rebind instantly opaque, revive, fly on the kept clock —
             // RP's exact `visible=true, uOpacity=1` + delayed flight.
             // Scale/uResolution keep their OLD values until the chained
-            // clocks below (RP parks hidden photos with their last size)
+            // clocks (RP parks hidden photos with their last size)
             m.position.set(vw, 0, 0)
             bindPlane(m, t.wp, true)
             m.visible = true
-            gsap.to(m.position, {
-              x: t.x,
-              duration: DUR,
-              ease: EASE,
-              delay: MOVE_DELAY,
-            })
-            gsap.to(m.scale, {
-              x: t.w,
-              y: t.h,
-              duration: SUB_DUR,
-              ease: EASE,
-              delay: S_DEL,
-            })
-            gsap.to(unis.uResolution.value, {
-              x: t.w,
-              y: t.h,
-              duration: SUB_DUR,
-              ease: EASE,
-              delay: R_DEL,
-            })
+            flyTo(
+              null,
+              m,
+              t,
+              { ...ck(RP_DUR, MOVE_DELAY), xOnly: true },
+              ck(RP_SUB_DUR, S_DEL),
+              ck(RP_SUB_DUR, R_DEL),
+            )
           }
           // borrowed: nothing to schedule here — the probe below owns it
         }
       })
-      // exits: leavers AND borrowed carriers share the leaver flight —
-      // nearest edge by x sign (RP: `x<=0 ? -I.width : I.width`),
-      // immediate, one clock. Borrowed carriers carry an OFFSCREEN
-      // PROBE: the moment a carrier passes fully invisible (center
-      // beyond the screen edge by half its width), its exit freezes,
-      // it teleports to the RIGHT-edge park (+vw — RP's universal
-      // entrant start; the teleport happens while invisible, zero
-      // artifact risk), rebinds instantly opaque, and flies to its
-      // slot with ALL remaining time — same path, same easing, same
-      // 1.9s landing as RP's parked-mesh entrants.
-      const waveT0 = performance.now() / 1000
-      const enterAt = (m: THREE.Mesh, ti: number) => {
-        if (requeueGen !== myGen) return // superseded — new wave owns m
-        const t = targets[ti]
-        m.position.set(vw, 0, 0) // RP's universal entrant park (+I.width)
-        bindPlane(m, t.wp, true) // offscreen: instant opaque rebind
-        m.visible = true
-        const elapsed = performance.now() / 1000 - waveT0
-        // land with everyone: MOVE_DELAY + DUR from wave start
-        gsap.to(m.position, {
-          x: t.x,
-          duration: Math.max(0.35, MOVE_DELAY + DUR - elapsed),
-          ease: EASE,
-        })
-        // chained clocks from the WAVE start (absolute when still in
-        // the future, ASAP once passed — the plane was invisible)
-        gsap.to(m.scale, {
-          x: t.w,
-          y: t.h,
-          duration: SUB_DUR,
-          ease: EASE,
-          delay: Math.max(0.05, S_DEL - elapsed),
-        })
-        gsap.to(unisOf(m).uResolution.value, {
-          x: t.w,
-          y: t.h,
-          duration: SUB_DUR,
-          ease: EASE,
-          delay: Math.max(0.1, R_DEL - elapsed),
-        })
-      }
-      for (const m of nonSurvivors) {
-        const dir = m.position.x <= 0 ? -1 : 1
-        const ti = newRoster.indexOf(m)
-        const borrowedEnterer = ti >= 0 && !usedT.has(ti)
-        // fully-invisible threshold: near edge past the screen edge
-        const offAt = dir * (vw / 2 + Math.abs(m.scale.x) / 2 + 4)
-        const state = { crossed: false }
-        const tw = gsap.to(m.position, {
-          x: dir * vw, // RP: ±I.width (the edge — no 1.5× overshoot)
-          duration: DUR,
-          ease: EASE,
-          onComplete: () => {
-            if (requeueGen !== myGen) return
-            if (borrowedEnterer) {
-              // belt: the target lies beyond the threshold, so the
-              // probe always fires first — kept for safety only
-              if (!state.crossed) enterAt(m, ti)
-              return
-            }
-            m.userData.inRow = false
-            m.userData.rowIdx = undefined
-            m.visible = false
-            snapMelt(m) // never flash a melted edge (spec §5)
-            m.position.x = vw // RP parks hidden photos at the right
-            // edge — the next wave's entrants all emerge from the right
-          },
-        })
-        tw.eventCallback("onUpdate", () => {
-          if (!borrowedEnterer || state.crossed) return
-          if (dir * m.position.x < dir * offAt) return // still partly visible
-          state.crossed = true
-          tw.kill() // freeze the exit at the invisible threshold
-          enterAt(m, ti)
-        })
-      }
+      // exits + offscreen probe: leavers AND borrowed carriers share the
+      // leaver flight (grammar + rationale on flyExits)
+      flyExits({
+        nonSurvivors,
+        newRoster,
+        usedT,
+        targetAt: (ti) => targets[ti],
+        moveDelay: MOVE_DELAY,
+        sDel: S_DEL,
+        rDel: R_DEL,
+        alive: () => requeueGen === myGen,
+        track: null,
+        exitClearsRow: true,
+        enterFull: false,
+      })
       rowPlanes = newRoster.filter((m): m is THREE.Mesh => !!m)
       rowWp = targets.map((t) => t.wp)
       requeuing = true
@@ -1452,15 +1276,12 @@ function WebGLGallery(
           prevIdx = -1
           suppressWrap = 3
           computeListLayout()
-          for (const m of planes) {
-            m.userData.lastX = NaN
-            m.userData.lastY = NaN
-          }
+          planes.forEach(nanXY)
           cbRef.current.onSeq(1)
         },
         // resume after the trailing uResolution clock too (exact-slot
         // writes would otherwise snap the mid-tween CoverUV reframe)
-        (Math.max(MOVE_DELAY + DUR, R_DEL + SUB_DUR) + 0.12) * 1000,
+        (Math.max(MOVE_DELAY + RP_DUR, R_DEL + RP_SUB_DUR) + 0.12) * 1000,
       )
     }
 
@@ -1535,10 +1356,11 @@ function WebGLGallery(
       cbRef.current.onHover(wp)
     }
 
-    const hitAt = (clientX: number, clientY: number) => {
-      ndc.x = (clientX / window.innerWidth) * 2 - 1
-      ndc.y = -(clientY / window.innerHeight) * 2 + 1
-      raycaster.setFromCamera(ndc, camera)
+    // pick predicate shared by click + hover raycasts: a hit counts only
+    // if the plane is VISIBLE and effectively opaque (mid-fade planes
+    // are ghosts — clicking through them must reach the photo behind)
+    const pickPlane = (ndcVec: THREE.Vector2) => {
+      raycaster.setFromCamera(ndcVec, camera)
       const hits = raycaster.intersectObjects(planes, false)
       const hit = hits.find(
         (h) =>
@@ -1549,6 +1371,12 @@ function WebGLGallery(
       if (!hit) return null
       const wp = hit.object.userData.wp as WallPhoto ?? null
       return wp ? { wp, mesh: hit.object as THREE.Mesh } : null
+    }
+
+    const hitAt = (clientX: number, clientY: number) => {
+      ndc.x = (clientX / window.innerWidth) * 2 - 1
+      ndc.y = -(clientY / window.innerHeight) * 2 + 1
+      return pickPlane(ndc)
     }
 
     const onMove = (e: PointerEvent) => {
@@ -1593,8 +1421,7 @@ function WebGLGallery(
     window.addEventListener("resize", onResize)
 
     // ── render loop ───────────────────────────────────────────────────
-    const wrapCoord = (v: number, half: number, ch: number) =>
-      ((((v + half) % ch) + ch) % ch) - half
+    const wrapCoord = wrapCoordOf
     // photo at a conveyor cursor (forward or negative/backward): reshuffles
     // the lap deterministically when the cursor crosses into a new one —
     // the one shared shape behind every wrap rebind (was triplicated)
@@ -1605,6 +1432,16 @@ function WebGLGallery(
         seq = shuffled(poolArr, WALL_SEED + lap * 7919)
       }
       return seq[((idx % N) + N) % N]
+    }
+
+    // conveyor ADVANCE (shared by the list + overview wrap paths): the
+    // plane that scrolled off re-enters carrying the NEXT photo, and the
+    // odometer reads the new conveyor head
+    const advance = (mesh: THREE.Mesh) => {
+      bindPlane(mesh, photoAt(nextIdx))
+      nextIdx++
+      dirty = true
+      cbRef.current.onSeq((((nextIdx % N) + N) % N) + 1)
     }
 
     let raf = 0
@@ -1766,6 +1603,16 @@ function WebGLGallery(
     // right-edge park and fly in, kept photos follow after a 0.5s flat.
     // On completion the tick loop resumes ownership — fly-in targets
     // equal the layout math exactly, so the handoff is seamless.
+    // absorb a pool deferred across a mode edge (cat+mode same-hash
+    // change) into the CURRENT build — rebinds happen offscreen inside
+    // the choreography, never on the settled visible wall (残影 class)
+    const absorbPendingPool = () => {
+      if (!pendingPool) return
+      poolArr = pendingPool
+      pendingPool = null
+      applyLayout(window.innerWidth, window.innerHeight)
+    }
+
     const startViewTransition = (
       toList: boolean,
       enterOnly = false,
@@ -1788,12 +1635,7 @@ function WebGLGallery(
       // offscreen, in BOTH directions. Deferring the handoff to the
       // completion timer (an earlier fix) rebound every plane AFTER they
       // had settled onscreen — a full-wall texture flash (残影 class).
-      if (pendingPool) {
-        const p = pendingPool
-        pendingPool = null
-        poolArr = p
-        applyLayout(window.innerWidth, window.innerHeight)
-      }
+      absorbPendingPool()
       {
         // lap-0 roster for the DESTINATION view — both directions now:
         // list flies in its strip, overview flies in the (possibly new
@@ -1807,24 +1649,25 @@ function WebGLGallery(
         if (toList) computeListLayout()
       }
 
-      const finishT = (i: number) => {
+      const finishT = (i: number): WaveTarget => {
+        const wp = rowWp[i] as WallPhoto
         if (toList) {
           const s = listSlots[i]
-          return { x: s.x, y: 0, z: 0, w: s.w, h: s.h }
+          return { wp, x: s.x, y: 0, z: 0, w: s.w, h: s.h }
         }
         const sl = L.slots[i]
         // target photo's OWN aspect: the plane rebinds to rowWp[i] at its
         // offscreen park — sizing by the OLD photo's ar would leave a
         // scale jump when the tick resumes with the new ar
-        const tw0 = rowWp[i] ?? planes[i].userData.wp as WallPhoto | null
-        const ar = tw0 ? tw0.photo.w / tw0.photo.h : 1
+        const ar = wp ? wp.photo.w / wp.photo.h : 1
         const w = boundW(sl.w, ar, L.pitch)
         return {
+          wp,
           x: sl.x,
-          y:
-            (sl.row - (L.rowN - 1) / 2) * L.pitch +
-            rowOffsetOf(sl.row, L.pitch),
-          z: sl.depth + zJitterOf(sl.row),
+          // y0/depth are computeLayout-precomputed (row baseline + seeded
+          // stagger; curve recede + z jitter) — same values the tick reads
+          y: sl.y0,
+          z: sl.depth,
           w,
           h: w / ar,
         }
@@ -1832,17 +1675,16 @@ function WebGLGallery(
 
       // ── RP view-switch grammar (DECOMPILED, lazy816.js main effect,
       // verified 2026-08-18): DIRECT SPATIAL MORPH — the same one clock
-      // as the filter requeue. No ripple, no fly-out-and-return, no
-      // grow, no stagger: kept photos fly straight from wherever they
-      // are to their new slot; hidden entrants revive at the +vw right
-      // park and fly in. Position 1.4s power3.inOut, delayed 0.5s
-      // entering list only (RP `-1!==v?.5:0`; the activation edge ≈
-      // v:-1 → no delay). scale/uResolution ride SHORTER CHAINED clocks
-      // (timeline "<" + per-tween delay): list → position @.5, scale
-      // @1.0, uRes @1.5 (0.618s = gsap's global 1/φ default); overview
-      // → position @0 (1.4s), scale @0 (1s), uRes @.5 (0.618s).
-      const DUR = 1.4
-      const EASE = "power3.inOut"
+      // as the filter requeue (RP_DUR/RP_EASE/RP_SUB_DUR, shared). No
+      // ripple, no fly-out-and-return, no grow, no stagger: kept photos
+      // fly straight from wherever they are to their new slot; hidden
+      // entrants revive at the +vw right park and fly in. Position 1.4s
+      // power3.inOut, delayed 0.5s entering list only (RP
+      // `-1!==v?.5:0`; the activation edge ≈ v:-1 → no delay).
+      // scale/uResolution ride SHORTER CHAINED clocks (timeline "<" +
+      // per-tween delay): list → position @.5, scale @1.0, uRes @1.5
+      // (0.618s = gsap's global 1/φ default); overview → position @0
+      // (1.4s), scale @0 (1s), uRes @.5 (0.618s).
       // intro: SEQUENTIAL POP (user-directed) — the hero (= the chip's
       // own photo) emerges first from the center stack, then every plane
       // pops in stack order, one at a time. Only ONE photo is ever in
@@ -1851,9 +1693,8 @@ function WebGLGallery(
       const STAG_INTRO = 0.05
       const myStag = (ti: number) => (intro ? ti * STAG_INTRO : 0)
       const MOVE_DELAY = enterOnly ? 0 : toList ? 0.5 : 0
-      const SUB_DUR = 0.618
       const S_DEL = MOVE_DELAY + (toList ? 0.5 : 0)
-      const S_DUR = toList ? SUB_DUR : 1
+      const S_DUR = toList ? RP_SUB_DUR : 1
       const R_DEL = MOVE_DELAY + (toList ? 1.0 : 0.5)
       // intro hero chain (RP `l` timeline): the stack's top photo GROWS
       // out of its 150px square on its own clocks — scale .6s sine.inOut
@@ -1879,30 +1720,12 @@ function WebGLGallery(
       // (same classifier as requeue — rapid edges converge). A HIDDEN
       // plane holding a target key counts as a survivor: it morphs in
       // from its +vw park (RP's entrant path, visible false→true).
-      const usedT = new Set<number>()
-      const newRoster: (THREE.Mesh | null)[] = new Array(count).fill(null)
-      const nonSurvivors: THREE.Mesh[] = []
-      const idle: THREE.Mesh[] = []
-      for (const m of planes) {
-        const wpt = (m.userData.want ?? m.userData.wp) as WallPhoto | null
-        const key = wpt?.photo.thumb ?? null
-        const ti = key ? rowWp.findIndex((r) => r?.photo.thumb === key) : -1
-        if (ti >= 0 && !usedT.has(ti)) {
-          usedT.add(ti)
-          newRoster[ti] = m
-        } else if (m.visible) nonSurvivors.push(m)
-        else idle.push(m)
-      }
-      const open = rowWp.map((_, ti) => ti).filter((ti) => !usedT.has(ti))
-      const carriers = idle.slice(0, open.length)
-      const rePurposed = nonSurvivors.slice(
-        0,
-        Math.max(0, open.length - carriers.length),
+      // Hidden non-matching planes become idle carriers (idlePool null).
+      const { usedT, newRoster, nonSurvivors, rePurposed } = classifyRoster(
+        planes,
+        rowWp.map((r) => r?.photo.thumb ?? ""),
+        null,
       )
-      open.forEach((ti, k) => {
-        const m = carriers[k] ?? rePurposed[k - carriers.length]
-        if (m) newRoster[ti] = m
-      })
       // slot ownership settles NOW (membership checks sleep while the
       // transition runs; the tick that resumes at completion reads
       // these). Surplus planes take overflow slots — overview hides by
@@ -1911,49 +1734,11 @@ function WebGLGallery(
       for (const m of planes) {
         const ti = newRoster.indexOf(m)
         m.userData.slot = ti >= 0 ? ti : overflow++
+        m.userData.bw = undefined // slot moved → boundW cache is stale
         m.userData.inRow = toList && ti >= 0
         m.userData.rowIdx = ti >= 0 ? ti : undefined
       }
 
-      const waveT0 = performance.now() / 1000
-      const enterAt = (m: THREE.Mesh, ti: number) => {
-        const t = finishT(ti)
-        m.position.set(vw, 0, 0) // RP's universal entrant park (+I.width)
-        bindPlane(m, rowWp[ti] as WallPhoto, true) // instant opaque
-        m.visible = true
-        const elapsed = performance.now() / 1000 - waveT0
-        const remain = Math.max(0.35, MOVE_DELAY + DUR - elapsed)
-        tweens.push(
-          gsap.to(m.position, {
-            x: t.x,
-            y: t.y,
-            z: t.z,
-            duration: remain,
-            ease: EASE,
-          }),
-        )
-        // chained clocks measured from the WAVE start (absolute RP
-        // timing when still in the future; ASAP once passed — the plane
-        // was invisible until the probe, so "late" is imperceptible)
-        tweens.push(
-          gsap.to(m.scale, {
-            x: t.w,
-            y: t.h,
-            duration: SUB_DUR,
-            ease: EASE,
-            delay: Math.max(0.05, S_DEL - elapsed),
-          }),
-        )
-        tweens.push(
-          gsap.to(unisOf(m).uResolution.value, {
-            x: t.w,
-            y: t.h,
-            duration: SUB_DUR,
-            ease: EASE,
-            delay: Math.max(0.1, R_DEL - elapsed),
-          }),
-        )
-      }
       newRoster.forEach((m, ti) => {
         if (!m) return
         const t = finishT(ti)
@@ -1972,69 +1757,48 @@ function WebGLGallery(
             return
           }
           m.visible = true
-          tweens.push(
-            gsap.to(m.position, {
-              x: t.x,
-              y: t.y,
-              z: t.z,
-              duration: DUR,
-              ease: EASE,
-              delay: MOVE_DELAY + myStag(ti),
-            }),
-          )
-          tweens.push(
-            gsap.to(m.scale, {
-              x: t.w,
-              y: t.h,
-              duration: heroS(m, ti) ? heroSdur : S_DUR,
-              ease: heroS(m, ti) ? heroEase : EASE,
-              delay: (heroS(m, ti) ? heroSdel : S_DEL) + myStag(ti),
-            }),
-          )
-          tweens.push(
-            gsap.to(unisOf(m).uResolution.value, {
-              x: t.w,
-              y: t.h,
-              duration: SUB_DUR,
-              ease: heroS(m, ti) ? heroEase : EASE,
-              delay: (heroS(m, ti) ? heroSdel : R_DEL) + myStag(ti),
-            }),
+          const hero = heroS(m, ti)
+          flyTo(
+            tweens,
+            m,
+            t,
+            ck(RP_DUR, MOVE_DELAY + myStag(ti)),
+            ck(
+              hero ? heroSdur : S_DUR,
+              (hero ? heroSdel : S_DEL) + myStag(ti),
+              hero ? heroEase : undefined,
+            ),
+            ck(
+              RP_SUB_DUR,
+              (hero ? heroSdel : R_DEL) + myStag(ti),
+              hero ? heroEase : undefined,
+            ),
           )
         } else {
           const borrowed = rePurposed.includes(m)
           if (!borrowed) {
             // idle carrier: park at +vw (right, invisible), rebind
             // instantly opaque, revive, morph in — RP's entrant path
+            // (full x/y/z triple — overview morphs fly the lattice too)
             m.position.set(vw, 0, 0)
-            bindPlane(m, rowWp[ti] as WallPhoto, true)
+            bindPlane(m, t.wp, true)
             m.visible = true
-            tweens.push(
-              gsap.to(m.position, {
-                x: t.x,
-                y: t.y,
-                z: t.z,
-                duration: DUR,
-                ease: EASE,
-                delay: MOVE_DELAY,
-              }),
-            )
-            tweens.push(
-              gsap.to(m.scale, {
-                x: t.w,
-                y: t.h,
-                duration: heroS(m, ti) ? heroSdur : S_DUR,
-                ease: heroS(m, ti) ? heroEase : EASE,
-                delay: heroS(m, ti) ? heroSdel : S_DEL,
-              }),
-            )
-            tweens.push(
-              gsap.to(unisOf(m).uResolution.value, {
-                x: t.w,
-                y: t.h,
-                duration: SUB_DUR,
-                ease: heroS(m, ti) ? heroEase : EASE,
-                delay: heroS(m, ti) ? heroSdel : R_DEL,
-              }),
+            const hero = heroS(m, ti)
+            flyTo(
+              tweens,
+              m,
+              t,
+              ck(RP_DUR, MOVE_DELAY),
+              ck(
+                hero ? heroSdur : S_DUR,
+                hero ? heroSdel : S_DEL,
+                hero ? heroEase : undefined,
+              ),
+              ck(
+                RP_SUB_DUR,
+                hero ? heroSdel : R_DEL,
+                hero ? heroEase : undefined,
+              ),
             )
           }
           // borrowed: the offscreen probe below owns park+rebind+entry
@@ -2043,37 +1807,22 @@ function WebGLGallery(
       // exits: visible non-matching planes (re-purposed carriers + true
       // leavers) fly to the nearest edge (±vw, RP ±I.width) immediately,
       // one clock — borrowed carriers carry the requeue's offscreen
-      // probe (rebind the instant they turn fully invisible)
-      for (const m of nonSurvivors) {
-        const dir = m.position.x <= 0 ? -1 : 1
-        const ti = newRoster.indexOf(m)
-        const borrowedEnterer = ti >= 0 && !usedT.has(ti)
-        const offAt = dir * (vw / 2 + Math.abs(m.scale.x) / 2 + 4)
-        const state = { crossed: false }
-        const tw = gsap.to(m.position, {
-          x: dir * vw,
-          duration: DUR,
-          ease: EASE,
-          onComplete: () => {
-            if (killed) return
-            if (borrowedEnterer) {
-              if (!state.crossed) enterAt(m, ti)
-              return
-            }
-            m.visible = false
-            snapMelt(m)
-            m.position.x = vw // RP parks hidden photos at the right edge
-          },
-        })
-        tw.eventCallback("onUpdate", () => {
-          if (!borrowedEnterer || state.crossed) return
-          if (dir * m.position.x < dir * offAt) return
-          state.crossed = true
-          tw.kill() // freeze at the invisible threshold; enterAt flies
-          enterAt(m, ti)
-        })
-        tweens.push(tw)
-      }
+      // probe (rebind the instant they turn fully invisible). VT
+      // entrants fly the FULL x/y/z triple (enterFull) and tweens are
+      // tracked for the wave kill().
+      flyExits({
+        nonSurvivors,
+        newRoster,
+        usedT,
+        targetAt: finishT,
+        moveDelay: MOVE_DELAY,
+        sDel: S_DEL,
+        rDel: R_DEL,
+        alive: () => !killed,
+        track: tweens,
+        exitClearsRow: false,
+        enterFull: true,
+      })
       timers.push(
         window.setTimeout(
           () => {
@@ -2097,10 +1846,7 @@ function WebGLGallery(
             window.setTimeout(() => {
               introLocked = false
             }, 2000)
-            row.forEach((m) => {
-              m.userData.lastX = NaN
-              m.userData.lastY = NaN
-            })
+            row.forEach(nanXY)
             // every completed view transition lands the wall at lap-0
             // TOP — the same visual state as boot, so the odometer reads
             // 01 (never the conveyor-head value: a fresh landing showing
@@ -2116,7 +1862,7 @@ function WebGLGallery(
           // the trailing uResolution clock (R_DEL + 0.618) — else the
           // tick's exact-slot writes snap the mid-tween CoverUV reframe;
           // intro: + the sequential-pop sweep (the LAST photo to land)
-          (Math.max(MOVE_DELAY + DUR, R_DEL + SUB_DUR) +
+          (Math.max(MOVE_DELAY + RP_DUR, R_DEL + RP_SUB_DUR) +
             (intro ? (count - 1) * STAG_INTRO : 0) +
             0.12) *
             1000,
@@ -2133,19 +1879,11 @@ function WebGLGallery(
           // (seedPool/seedRow order) — a bare decrement would underflow to
           // -1 and let the transitioning>0 render gate skip fade frames
           if (transitioning > 0) transitioning--
-          row.forEach((m) => {
-            m.userData.lastX = NaN
-            m.userData.lastY = NaN
-          })
+          row.forEach(nanXY)
           // a deferred pool (cat+mode same-hash change) must not strand:
           // the killer (seedPool/seedRow/startViewTransition) is about to
           // rebuild with SOME pool — make sure it's the newest one
-          if (pendingPool) {
-            const p = pendingPool
-            pendingPool = null
-            poolArr = p
-            applyLayout(window.innerWidth, window.innerHeight)
-          }
+          absorbPendingPool()
         },
       }
     }
@@ -2286,151 +2024,156 @@ function WebGLGallery(
       if (Math.abs(A) > 0.1 && hoveredKeyRef.current !== null)
         setHover(null, null)
 
-      for (const mesh of planes) {
-        const i = mesh.userData.slot as number
-        if (viewTrans || requeuing || bootParked) {
-          // transition/requeue tweens own transforms AND visibility (the
-          // membership flags below only settle at completion — checking
-          // them mid-transition hid every plane through an overview→list
-          // switch and nothing re-showed them: the "list has no images"
-          // bug). NaN sentinels force the wrap detection to re-capture
-          // cleanly when layout resumes (NaN never compares true → no
-          // phantom rebind)
-          mesh.userData.lastX = NaN
-          mesh.userData.lastY = NaN
-          dirty = true
-          continue
-        }
-        // responsive: overview hides planes beyond the lattice count;
-        // list membership is the roster flag (requeue swaps carriers in)
-        if (lm ? !mesh.userData.inRow : i >= L.count) {
-          if (mesh.visible) mesh.visible = false
-          continue
-        }
-        const unis = unisOf(mesh)
+      // idle early-out (perf): when the gallery is INACTIVE, nothing
+      // changed since the last render (dirty), the boot fades are done
+      // (firstFrames/transitioning) and no wave owns the planes — the
+      // whole 36-plane math loop is skipped, not just the render.
+      // Everything that must keep draining while hidden stays OUTSIDE
+      // this gate: upload-queue drain, hover reset, prefetch, the
+      // activation/mode-edge checks above (they all require active /
+      // dirty anyway). A decaying A (post-deactivation glide) keeps the
+      // loop alive: moving planes re-dirty every frame until the
+      // damped velocity settles; bootParked forces the loop (it sets
+      // dirty) so the parked stack never freezes mid-intro.
+      const idleHidden =
+        !activeRef.current &&
+        !dirty &&
+        firstFrames === 0 &&
+        transitioning === 0 &&
+        !viewTrans &&
+        !requeuing
+      if (!idleHidden) {
+        for (const mesh of planes) {
+          const i = mesh.userData.slot as number
+          if (viewTrans || requeuing || bootParked) {
+            // transition/requeue tweens own transforms AND visibility (the
+            // membership flags below only settle at completion — checking
+            // them mid-transition hid every plane through an overview→list
+            // switch and nothing re-showed them: the "list has no images"
+            // bug). NaN sentinels force the wrap detection to re-capture
+            // cleanly when layout resumes (NaN never compares true → no
+            // phantom rebind)
+            mesh.userData.lastX = NaN
+            mesh.userData.lastY = NaN
+            dirty = true
+            continue
+          }
+          // responsive: overview hides planes beyond the lattice count;
+          // list membership is the roster flag (requeue swaps carriers in)
+          if (lm ? !mesh.userData.inRow : i >= L.count) {
+            if (mesh.visible) mesh.visible = false
+            continue
+          }
+          if (lm) {
+            // ── LIST: horizontal filmstrip row (y=0, z=0, slot sizes) ──
+            const slot = listSlots[mesh.userData.rowIdx as number ?? i]
+            if (!slot) continue
+            const x = wrapCoord(slot.x + wallX, listTW / 2, listTW)
+            const lastX = mesh.userData.lastX as number
+            // horizontal conveyor: a plane that jumped right→entered from
+            // the right edge carries the NEXT photo; jumped left→entered
+            // from the left edge pulls the PREVIOUS photo (bidirectional)
+            if (
+              activeRef.current &&
+              suppressWrap === 0 &&
+              x - lastX > listTW * 0.5
+            ) {
+              advance(mesh)
+            } else if (
+              activeRef.current &&
+              suppressWrap === 0 &&
+              x - lastX < -listTW * 0.5
+            ) {
+              const k = prevIdx
+              bindPlane(mesh, photoAt(k))
+              prevIdx--
+              dirty = true
+              cbRef.current.onSeq((((k % N) + N) % N) + 1)
+            }
+            mesh.userData.lastX = x
+            if (
+              mesh.position.x !== x ||
+              mesh.position.y !== 0 ||
+              mesh.position.z !== 0 ||
+              mesh.scale.x !== slot.w ||
+              mesh.scale.y !== slot.h
+            ) {
+              mesh.position.set(x, 0, 0)
+              setSize(mesh, slot.w, slot.h)
+              dirty = true
+            }
+            continue
+          }
 
-        if (lm) {
-          // ── LIST: horizontal filmstrip row (y=0, z=0, slot sizes) ──
-          const slot = listSlots[mesh.userData.rowIdx as number ?? i]
-          if (!slot) continue
-          const x = wrapCoord(slot.x + wallX, listTW / 2, listTW)
-          const lastX = mesh.userData.lastX as number
-          // horizontal conveyor: a plane that jumped right→entered from
-          // the right edge carries the NEXT photo; jumped left→entered
-          // from the left edge pulls the PREVIOUS photo (bidirectional)
+          // ── OVERVIEW: vertical conveyor (collage lattice) ──
+          const sl = L.slots[i]
+          // y0/depth precomputed by computeLayout (row baseline + stagger /
+          // curve + z-jitter) — no per-frame lattice math here
+          let y = sl.y0 - s
+          y = wrapCoord(y, L.cycleH / 2, L.cycleH)
+
+          // conveyor rebind: plane scrolled off the top re-enters at the
+          // bottom carrying the NEXT photo from the lap sequence.
+          // Skipped while hidden (list/info).
+          const lastY = mesh.userData.lastY as number
           if (
             activeRef.current &&
             suppressWrap === 0 &&
-            x - lastX > listTW * 0.5
+            y - lastY > L.cycleH * 0.5
           ) {
-            bindPlane(mesh, photoAt(nextIdx))
-            nextIdx++
-            dirty = true
-            cbRef.current.onSeq((((nextIdx % N) + N) % N) + 1)
-          } else if (
-            activeRef.current &&
-            suppressWrap === 0 &&
-            x - lastX < -listTW * 0.5
-          ) {
-            const k = prevIdx
-            bindPlane(mesh, photoAt(k))
-            prevIdx--
-            dirty = true
-            cbRef.current.onSeq((((k % N) + N) % N) + 1)
+            advance(mesh)
           }
-          mesh.userData.lastX = x
+          mesh.userData.lastY = y
+
+          const py = sl.x
+          const arv = mesh.userData.ar as number
+          // boundW is pure per-slot math — cached at bind time (invalidated
+          // on relayout / slot reassignment); compute lazily as a fallback
+          let psx = mesh.userData.bw as number | undefined
+          if (psx === undefined) {
+            psx = mesh.userData.bw = boundW(sl.w, arv, L.pitch)
+          }
+          const psy = psx / arv
+          const pz = sl.depth
           if (
-            mesh.position.x !== x ||
-            mesh.position.y !== 0 ||
-            mesh.position.z !== 0 ||
-            mesh.scale.x !== slot.w ||
-            mesh.scale.y !== slot.h
+            mesh.position.x !== py ||
+            mesh.position.y !== y ||
+            mesh.position.z !== pz ||
+            mesh.scale.x !== psx ||
+            mesh.scale.y !== psy
           ) {
-            mesh.position.set(x, 0, 0)
-            mesh.scale.set(slot.w, slot.h, 1)
-            unis.uResolution.value.x = slot.w
-            unis.uResolution.value.y = slot.h
+            mesh.position.set(py, y, pz)
+            setSize(mesh, psx, psy)
             dirty = true
           }
-          continue
-        }
-
-        // ── OVERVIEW: vertical conveyor (collage lattice) ──
-        const sl = L.slots[i]
-        const baseY =
-          (sl.row - (L.rowN - 1) / 2) * L.pitch + rowOffsetOf(sl.row, L.pitch)
-        let y = baseY - s
-        y = wrapCoord(y, L.cycleH / 2, L.cycleH)
-
-        // conveyor rebind: plane scrolled off the top re-enters at the
-        // bottom carrying the NEXT photo from the lap sequence.
-        // Skipped while hidden (list/info).
-        const lastY = mesh.userData.lastY as number
-        if (
-          activeRef.current &&
-          suppressWrap === 0 &&
-          y - lastY > L.cycleH * 0.5
-        ) {
-          bindPlane(mesh, photoAt(nextIdx))
-          nextIdx++
-          dirty = true
-          cbRef.current.onSeq((((nextIdx % N) + N) % N) + 1)
-        }
-        mesh.userData.lastY = y
-
-        const py = sl.x
-        const arv = mesh.userData.ar as number
-        const psx = boundW(sl.w, arv, L.pitch)
-        const psy = psx / arv
-        const pz = sl.depth + zJitterOf(sl.row)
-        if (
-          mesh.position.x !== py ||
-          mesh.position.y !== y ||
-          mesh.position.z !== pz ||
-          mesh.scale.x !== psx ||
-          mesh.scale.y !== psy
-        ) {
-          mesh.position.set(py, y, pz)
-          mesh.scale.set(psx, psy, 1)
-          // keep the shader's cover-fit ratio in sync with the plane size
-          unis.uResolution.value.x = psx
-          unis.uResolution.value.y = psy
-          dirty = true
         }
       }
 
       // breathing keeps the live wall rendering every frame; when the
       // wall is hidden (list/info) we only render on real changes
+      // (dirty was never cleared before — the gate's documented intent
+      // only holds if the render CONSUMES the flag)
       if (activeRef.current || dirty || firstFrames > 0 || transitioning > 0) {
         if (firstFrames > 0) firstFrames--
         renderer.render(scene, camera)
+        dirty = false
       }
 
       // hover: card stays while the cursor is on the canvas; null hits
       // (seams) are ignored — only leaving the canvas clears it.
       // Raycast only when the pointer moved (planes also move under a
       // still cursor while scrolling — covered by `dirty` below)
-      let candidate: { key: string; mesh: THREE.Mesh } | null = null
+    interface HoverCand {
+      key: string
+      mesh: THREE.Mesh
+    }
+      let candidate: HoverCand | null = null
       if (!activeRef.current || viewTrans || requeuing) {
         setHover(null, null, true) // view transitions reset presentation
       } else if (pointerInside && pointerMoved) {
         pointerMoved = false
-        raycaster.setFromCamera(pointerNdc, camera)
-        const hits = raycaster.intersectObjects(planes, false)
-        const hit = hits.find(
-          (h) =>
-            (h.object as THREE.Mesh).visible &&
-            ((h.object as THREE.Mesh).material as THREE.MeshBasicMaterial)
-              .opacity > 0.5,
-        )
-        const wp = hit
-          ? (hit.object.userData.wp as WallPhoto | null ?? null)
-          : null
-        if (wp && hit)
-          candidate = {
-            key: wp.photo.thumb,
-            mesh: hit.object as THREE.Mesh,
-          }
+        const hit = pickPlane(pointerNdc)
+        if (hit) candidate = { key: hit.wp.photo.thumb, mesh: hit.mesh }
       }
       if (!pointerInside && !isCoarse) {
         setHover(null, null)
@@ -2595,37 +2338,28 @@ function WebGLGallery(
       gsap.set(s, { height: active ? cycleH * NUM_CYCLES : 0 })
       return
     }
+    // canvas fade + spacer grow/collapse always tween together on one
+    // clock (canvas skips the tween while the info choreography owns it)
+    const chromeTo = (
+      t: gsap.TweenTarget,
+      vars: gsap.TweenVars,
+      dur: number,
+      delay = 0,
+    ) =>
+      gsap.to(t, {
+        duration: dur,
+        ease: "power2.inOut",
+        overwrite: "auto",
+        delay,
+        ...vars,
+      })
     const infoOwnsCanvas = infoCanvasRef.current
     if (active) {
-      if (!infoOwnsCanvas)
-        gsap.to(c, {
-          opacity: 1,
-          duration: 0.5,
-          ease: "power2.inOut",
-          delay: 0.15,
-          overwrite: "auto",
-        })
-      gsap.to(s, {
-        height: cycleH * NUM_CYCLES,
-        duration: 0.5,
-        ease: "power2.inOut",
-        delay: 0.15,
-        overwrite: "auto",
-      })
+      if (!infoOwnsCanvas) chromeTo(c, { opacity: 1 }, 0.5, 0.15)
+      chromeTo(s, { height: cycleH * NUM_CYCLES }, 0.5, 0.15)
     } else {
-      if (!infoOwnsCanvas)
-        gsap.to(c, {
-          opacity: 0,
-          duration: 0.35,
-          ease: "power2.inOut",
-          overwrite: "auto",
-        })
-      gsap.to(s, {
-        height: 0,
-        duration: 0.35,
-        ease: "power2.inOut",
-        overwrite: "auto",
-      })
+      if (!infoOwnsCanvas) chromeTo(c, { opacity: 0 }, 0.35)
+      chromeTo(s, { height: 0 }, 0.35)
     }
   }, [active, cycleH])
 
