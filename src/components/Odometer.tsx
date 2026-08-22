@@ -169,6 +169,7 @@ export const Odometer = forwardRef<OdometerHandle, {
   return (
     <span
       ref={wrapRef}
+      aria-hidden
       style={{
         display: "inline-flex",
         lineHeight: 1,
@@ -249,6 +250,7 @@ export const IntroOdometer = forwardRef<IntroOdometerHandle, {
     <div
       ref={rootRef}
       data-v="0"
+      aria-hidden
       style={{
         display: "inline-flex",
         lineHeight: 1,

@@ -82,6 +82,7 @@ export default function NavBar({
       <button
         onClick={() => nav("#/")}
         onMouseEnter={scrambleIn}
+        aria-label="Spike Hu — home"
         style={{
           ...DISPLAY,
           fontSize: 13,
@@ -155,6 +156,8 @@ export default function NavBar({
                   <button
                     onClick={() => nav(mainHref(cat, m))}
                     onMouseEnter={scrambleIn}
+                    aria-label={m}
+                    aria-pressed={mode === m && !infoOpen}
                     style={{
                       ...MONO,
                       fontSize: 11,
@@ -169,6 +172,7 @@ export default function NavBar({
                     {m.toUpperCase()}
                   </button>
                   <span
+                    aria-hidden
                     style={{
                       ...MONO,
                       fontSize: 11,
@@ -191,6 +195,8 @@ export default function NavBar({
                   else nav(`${base}/info`)
                 }}
                 onMouseEnter={scrambleIn}
+                aria-label="Info"
+                aria-pressed={infoOpen}
                 style={{
                   ...MONO,
                   fontSize: 11,
@@ -209,6 +215,7 @@ export default function NavBar({
               className="nav-mail"
               href="mailto:1162844453@qq.com"
               onMouseEnter={scrambleIn}
+              aria-label="Email"
               style={{
                 ...MONO,
                 fontSize: 10,
@@ -222,6 +229,7 @@ export default function NavBar({
             <button
               onClick={onToggleTheme}
               title="Toggle theme"
+              aria-label="Toggle theme"
               style={{
                 width: 22,
                 height: 22,

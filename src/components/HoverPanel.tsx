@@ -16,6 +16,7 @@ export default function HoverPanel({
   return (
     <div
       ref={panelRef}
+      aria-hidden
       style={{
         position: "fixed",
         bottom: 190,

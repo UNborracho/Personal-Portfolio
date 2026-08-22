@@ -2163,10 +2163,10 @@ function WebGLGallery(
       // (seams) are ignored — only leaving the canvas clears it.
       // Raycast only when the pointer moved (planes also move under a
       // still cursor while scrolling — covered by `dirty` below)
-    interface HoverCand {
-      key: string
-      mesh: THREE.Mesh
-    }
+      interface HoverCand {
+        key: string
+        mesh: THREE.Mesh
+      }
       let candidate: HoverCand | null = null
       if (!activeRef.current || viewTrans || requeuing) {
         setHover(null, null, true) // view transitions reset presentation
@@ -2369,6 +2369,8 @@ function WebGLGallery(
     <>
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label="Interactive photo collage wall — browse series via the Projects links"
         style={{
           position: "fixed",
           inset: 0,

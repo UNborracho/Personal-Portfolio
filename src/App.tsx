@@ -746,7 +746,7 @@ export default function App() {
           }}
         >
           {pool.map((wp) => (
-            <div
+            <button
               data-cursor
               className="masonry-card"
               key={`${wp.series.slug}-${wp.index}`}
@@ -756,6 +756,13 @@ export default function App() {
                 cursor: "pointer",
                 background: "var(--bg-soft)",
                 position: "relative",
+                // button reset: the card must not look like a form control
+                padding: 0,
+                border: "none",
+                display: "block",
+                width: "100%",
+                textAlign: "inherit",
+                font: "inherit",
               }}
               onMouseEnter={() => setHoveredWP(wp)}
               onClick={() => openProject(wp)}
@@ -771,7 +778,7 @@ export default function App() {
                   display: "block",
                 }}
               />
-            </div>
+            </button>
           ))}
         </div>
       </section>
@@ -970,6 +977,27 @@ export default function App() {
             onToggleTheme={toggleTheme}
             onOpenInfo={openInfo}
           />
+          {webglOk && // pointer event — this keeps every series reachable by // sr-only project index: the wall's only opener is a canvas
+          // keyboard / screen reader (cards reveal on focus, see
+          // .sr-only-card in index.css).
+          (
+            <nav aria-label="Projects" className="sr-only">
+              {pool
+                .filter(
+                  (w, i, arr) =>
+                    arr.findIndex((x) => x.series === w.series) === i,
+                )
+                .map((wp) => (
+                  <button
+                    key={wp.series.slug}
+                    className="sr-only-card"
+                    onClick={() => openProject(wp)}
+                  >
+                    Open {wp.series.name}
+                  </button>
+                ))}
+            </nav>
+          )}
           {panelWP && (
             <HoverPanel
               wp={panelWP}

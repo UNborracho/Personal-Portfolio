@@ -1,4 +1,5 @@
 import gsap from "gsap"
+import { useEffect } from "react"
 import Transition from "../Transition"
 import { nav, type Mode } from "../router"
 import { AVATAR, type CatFilter } from "../shared"
@@ -63,6 +64,33 @@ export default function InfoOverlay({
   cat: CatFilter
   mode: Mode
 }) {
+  const close = () => {
+    // RP contact close (layout.js @29048): the contact page fades ITSELF
+    // out — 1s power4.out (0.5s <800px) — and the route pops in the
+    // fade's onComplete. The wall's return-park fly-in then follows via
+    // restoreFromInfo.
+    const el = infoLayerRef.current
+    if (!el) {
+      nav(mainHref(cat, mode))
+      return
+    }
+    gsap.killTweensOf(el)
+    gsap.to(el, {
+      opacity: 0,
+      duration: window.innerWidth >= 800 ? 1 : 0.5,
+      ease: "power4.out",
+      onComplete: () => nav(mainHref(cat, mode)),
+    })
+  }
+  // Escape closes INFO — same choreography as the [CLOSE] button.
+  useEffect(() => {
+    if (!infoOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [infoOpen, cat, mode])
   return (
     <Transition show={infoOpen} enter={infoEnter} exit={infoExit}>
       <div
@@ -109,24 +137,7 @@ export default function InfoOverlay({
           </div>
           <button
             className="info-block"
-            onClick={() => {
-              // RP contact close (layout.js @29048): the contact page
-              // fades ITSELF out — 1s power4.out (0.5s <800px) — and
-              // the route pops in the fade's onComplete. The wall's
-              // return-park fly-in then follows via restoreFromInfo.
-              const el = infoLayerRef.current
-              if (!el) {
-                nav(mainHref(cat, mode))
-                return
-              }
-              gsap.killTweensOf(el)
-              gsap.to(el, {
-                opacity: 0,
-                duration: window.innerWidth >= 800 ? 1 : 0.5,
-                ease: "power4.out",
-                onComplete: () => nav(mainHref(cat, mode)),
-              })
-            }}
+            onClick={close}
             style={{
               ...MONO,
               fontSize: 11,

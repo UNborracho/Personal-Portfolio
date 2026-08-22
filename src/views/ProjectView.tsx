@@ -1,3 +1,4 @@
+import { useEffect } from "react"
 import type { Mode } from "../router"
 import type { CatFilter, Series } from "../shared"
 import NavBar from "../components/NavBar"
@@ -36,6 +37,16 @@ export default function ProjectView({
   onToggleTheme: () => void
 }) {
   const projectImages = projectSeries.photos
+  // Escape goes back to the wall — mirrors the nav [ CLOSE ] button.
+  // When INFO is open on top, ITS Escape handler owns the close.
+  useEffect(() => {
+    if (infoOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [onClose, infoOpen])
   return (
     <>
       <NavBar
