@@ -1,5 +1,11 @@
 # SPIKE HU — Photography Folio
 
+[![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev)
+[![Vite](https://img.shields.io/badge/Vite_8-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vite.dev)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS_4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
+[![Three.js](https://img.shields.io/badge/Three.js-000000?style=for-the-badge&logo=threedotjs&logoColor=white)](https://threejs.org)
+[![GSAP](https://img.shields.io/badge/GSAP_3-88CE02?style=for-the-badge&logo=greensock&logoColor=white)](https://gsap.com)
+
 ## What is this
 
 An infinite, scroll-driven photography portfolio. The gallery is a Three.js plane conveyor bent along a gentle cylinder — scrolling forever, every wrapped plane carrying the next photo from a shuffled lap sequence. One lap = every photo, no repeats; the next lap reshuffles. Lenis drives the smooth scroll, GSAP the choreography, and every animation is a 1:1 recreation of the reference site's decompiled timing. Live at **[portfolio.vagab0nd.site](https://portfolio.vagab0nd.site)**.
