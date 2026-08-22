@@ -60,8 +60,4 @@ export function shuffled<T>(arr: T[], seed: number): T[] {
   return a
 }
 
-// Per-column vertical stagger (px) — organic "not on the same baseline" feel
-export const COL_OFFSETS = [0, 18, -14, 9]
 
-// Cover for the list strip: first photo of the series (G-table default).
-export const coverOf = (series: Series): Photo => series.photos[0]

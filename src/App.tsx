@@ -27,7 +27,6 @@ import Cursor from "./Cursor"
 import Transition from "./Transition"
 import { useRoute, nav, navReplace, type Mode } from "./router"
 import {
-  SERIES,
   CATEGORIES,
   AVATAR,
   WALL,
@@ -42,12 +41,18 @@ import {
 
 gsap.registerPlugin(ScrollTrigger, ScrambleTextPlugin)
 
+// ── Static capability probes (module scope — never re-probed per render) ──
+const REDUCED_MOTION =
+  typeof window !== "undefined" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches
+const FINE_POINTER =
+  typeof window !== "undefined" &&
+  window.matchMedia("(pointer: fine)").matches
+
 // ── RP hover scramble (decompiled layout.js): ScrambleText, duration
 // 1.2, chars "upperCase", speed 0.1 — letters roll through uppercase
 // noise and re-lock into the original text. Reduced motion: skip.
-const scrambleOK =
-  typeof window !== "undefined" &&
-  !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+const scrambleOK = !REDUCED_MOTION
 
 function scrambleIn(e: React.MouseEvent<HTMLElement>) {
   const el = e.currentTarget
@@ -93,24 +98,28 @@ function useClock() {
   return time
 }
 
-// WebGL + reduced-motion capability check (decides gallery vs DOM fallback)
-function useWebGLOk() {
-  return useMemo(() => {
-    try {
-      const reduce = window.matchMedia(
-        "(prefers-reduced-motion: reduce)",
-      ).matches
-      if (reduce) return false
-      const c = document.createElement("canvas")
-      return !!(
-        window.WebGLRenderingContext &&
-        (c.getContext("webgl") || c.getContext("experimental-webgl"))
-      )
-    } catch {
-      return false
-    }
-  }, [])
+/** Isolated clock — the 1 Hz tick re-renders only this text node
+ *  instead of the whole App tree (INFO overlay is its only consumer). */
+function LocalTime() {
+  const time = useClock()
+  return <>{time}</>
 }
+
+// WebGL + reduced-motion capability check (decides gallery vs DOM
+// fallback) — module scope: one probe per page, no throwaway canvas
+// per mount (StrictMode mounts twice).
+const WEBGL_OK = (() => {
+  try {
+    if (REDUCED_MOTION) return false
+    const c = document.createElement("canvas")
+    return !!(
+      window.WebGLRenderingContext &&
+      (c.getContext("webgl") || c.getContext("experimental-webgl"))
+    )
+  } catch {
+    return false
+  }
+})()
 
 // ── Rolling-digit Odometer ───────────────────────────────────────────────
 const STRIP = "01234567890"
@@ -272,7 +281,10 @@ function Chars({
 // (150px, same spot): a seamless swap. (RP's chip is a separate portrait
 // that visibly changes photo at handoff — ours swaps identities for free
 // by being the SAME image; user-confirmed intent.)
-const HERO_CHIP = shuffled(WALL, WALL_SEED)[0].photo.thumb
+// LAP0 is the module-level first lap of the wall — one shuffle shared by
+// the hero chip and the preloader so both agree on photo order.
+const LAP0 = shuffled(WALL, WALL_SEED)
+const HERO_CHIP = LAP0[0].photo.thumb
 
 // ── RP intro odometer: 3 mechanical digit columns ──────────────────────
 // Exact percentage readout 000→100 with monotonic (never-backward) strips:
@@ -516,9 +528,7 @@ function NavBar({
   // blur only on fine pointers: on phones the compositor re-blurs the nav
   // every frame over the animating canvas — one of the biggest mobile costs.
   // Coarse pointers get a flat near-opaque bar (same look at rest).
-  const blurNav =
-    typeof window !== "undefined" &&
-    window.matchMedia("(pointer: fine)").matches
+  const blurNav = FINE_POINTER
   return (
     <header
       ref={headerRef}
@@ -629,17 +639,7 @@ function NavBar({
               {(["overview", "list"] as Mode[]).map((m) => (
                 <span key={m} style={{ display: "flex", alignItems: "center" }}>
                   <button
-                    onClick={() =>
-                      nav(
-                        m === "overview"
-                          ? cat === "all"
-                            ? "#/"
-                            : `#/${cat}`
-                          : cat === "all"
-                            ? "#/list"
-                            : `#/${cat}/list`,
-                      )
-                    }
+                    onClick={() => nav(mainHref(cat, m))}
                     onMouseEnter={scrambleIn}
                     style={{
                       ...MONO,
@@ -956,8 +956,7 @@ export default function App() {
   const projectIdxRef = useRef(0)
   const routePhotoRef = useRef(route.photo)
   const lastMainModeRef = useRef<Mode>("overview")
-  const clock = useClock()
-  const webglOk = useWebGLOk()
+  const webglOk = WEBGL_OK
 
   // RP info transition: refs to the hard-cut chrome elements (nav, footer;
   // the canvas lives inside WebGLGallery and hides via its infoOpen prop)
@@ -979,7 +978,9 @@ export default function App() {
   const mode: Mode = view === "project" ? "overview" : route.mode
   const infoOpen = view === "main" && route.info
   const pool = useMemo(() => wallForCat(route.cat), [route.cat])
-  routePhotoRef.current = route.photo
+  useEffect(() => {
+    routePhotoRef.current = route.photo
+  }, [route.photo])
 
   const isDark = theme === "dark"
   const bg = "var(--bg)"
@@ -1078,7 +1079,7 @@ export default function App() {
       // per-word mask rise on the same clock start (the hover-card
       // reveal grammar); skip under reduced motion
       const inners = el.querySelectorAll("[data-fw]")
-      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (!REDUCED_MOTION) {
         gsap.set(inners, { yPercent: 110 })
         gsap.to(inners, {
           yPercent: 0,
@@ -1183,10 +1184,7 @@ export default function App() {
     const rows = el.querySelectorAll<HTMLElement>('[data-hp="row"]')
     const fins = el.querySelectorAll<HTMLElement>('[data-hp="fin"]')
     gsap.killTweensOf([...lines, ...rows, ...fins])
-    const reduced = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches
-    if (reduced) {
+    if (REDUCED_MOTION) {
       gsap.set([lines, rows, fins], { clearProps: "all" })
       gsap.set(el, { opacity: 1, y: 0 })
       panelShownRef.current = true
@@ -1235,9 +1233,7 @@ export default function App() {
   useLayoutEffect(() => {
     if (introDone) return
 
-    const reduced = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches
+    const reduced = REDUCED_MOTION
     const t0 = performance.now()
     const MIN_WAIT = 800 // RP shows the counter even on instant (cached) loads
 
@@ -1445,7 +1441,7 @@ export default function App() {
     // 3-col tablets: 28, desktop: 36).
     const vw0 = window.innerWidth
     const preloadN = vw0 < 640 ? 20 : vw0 < 1140 ? 28 : 36
-    const firstLap = shuffled(WALL, WALL_SEED).slice(0, preloadN)
+    const firstLap = LAP0.slice(0, preloadN)
     const loadState = { loaded: 0 }
     // decoded intro images, handed to the engine so boot-lap textures are
     // built from the SAME bitmaps the counter waited on (no second fetch;
@@ -2036,7 +2032,7 @@ export default function App() {
                         fontVariantNumeric: "tabular-nums",
                       }}
                     >
-                      {clock}
+                      <LocalTime />
                     </div>
                   </div>
                   <div className="info-block" style={{ marginBottom: 36 }}>

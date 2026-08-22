@@ -25,7 +25,6 @@ const HOVER_HOLD = 2 // frames a candidate must stay stable before hover switche
 /** Deterministic wall seed + intro flags live in ./gallery-flags
  *  (kept free of three imports so App can read them without pulling
  *  this chunk — it is dynamically imported only when webglOk). */
-export { WALL_SEED, INTRO_EXPLODE, bootFlags } from "./gallery-flags"
 
 export interface GalleryHandle {
   /** RP info-exit re-enter (invoked by App when #/info closes): the
@@ -438,8 +437,8 @@ function WebGLGallery(
     // project_vertex & map_fragment reproduced verbatim with additions;
     // every channel is 0 at rest → identity transform, rendering
     // byte-identical to the plain material).
-    //  - vertex: curtain bend (uSpeed, scroll velocity), curl wave
-    //    (uCurl, view transitions), horizontal ripple (uAnim, pulses)
+    //  - vertex: curtain bend (uSpeed, scroll velocity),
+    //    horizontal ripple (uAnim, pulses)
     //  - fragment: cover-fit UV (aspect-safe morphing) + displacement
     //    liquid swirl on hover (uHover)
     type Uni1 = { value: number }
@@ -457,7 +456,6 @@ function WebGLGallery(
     const shared = {
       uTime: { value: 0 } as Uni1,
       uSpeed: { value: 0 } as Uni1,
-      uCurl: { value: 0 } as Uni1,
       uBreath: { value: 0 } as Uni1,
       uAxis: { value: 0 } as Uni1, // 0 = vertical conveyor bend (fn of y), 1 = filmstrip bend (fn of x)
       uViewport: { value: { x: vw, y: vh } } as Uni2,
@@ -519,7 +517,6 @@ function WebGLGallery(
             `#include <common>
             uniform float uTime;
             uniform float uSpeed;
-            uniform float uCurl;
             uniform float uBreath;
             uniform vec2 uViewport;
             uniform float uAnim;
@@ -550,7 +547,6 @@ function WebGLGallery(
             // is exactly a, so overview stays byte-identical.
             float rpBendCoord = mix( mvPosition.y / uViewport.y, mvPosition.x / uViewport.x, uAxis );
             mvPosition.z += cos( rpBendCoord * PI * 1.8 ) * uSpeed;
-            mvPosition.z += sin( mvPosition.y / uViewport.y * PI + uTime ) * 2.0 * uCurl;
             mvPosition.x += cos( mvPosition.y + uTime * 5.0 ) * 0.3 * uAnim;
             // RP idle breathing: every photo bobs on cos(localY + t)
             // (their term: cos(p.y+t)*1.5*0.09*0.2 ≈ 2.7% of a photo)
@@ -2537,6 +2533,10 @@ function WebGLGallery(
       texCache.forEach((t) => t?.dispose())
       texCache.clear()
       renderer.dispose()
+      // release the GL context too — dispose alone keeps it alive and
+      // browsers cap live contexts (~8–16); this component remounts on
+      // every project visit and Safari frees contexts lazily
+      renderer.forceContextLoss()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
