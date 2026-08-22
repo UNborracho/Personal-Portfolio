@@ -735,13 +735,13 @@ function NavBar({
 function HoverPanel({
   wp,
   panelRef,
-  bg,
   fg,
+  isDark,
 }: {
   wp: WallPhoto
   panelRef: React.RefObject<HTMLDivElement | null>
-  bg: string
   fg: string
+  isDark: boolean
 }) {
   const { series, index } = wp
   return (
@@ -752,37 +752,52 @@ function HoverPanel({
         bottom: 190,
         left: "clamp(16px, 4vw, 40px)",
         zIndex: 500,
-        background: bg,
+        // (C) theme-aware surface: dark keeps the solid card + heavy
+        // drop; light drops the shadow weight and lets 4% of the wall
+        // breathe through — the old one-size black fog read as dirt on
+        // the light theme
+        background: `color-mix(in srgb, var(--bg) ${
+          isDark ? "100" : "96"
+        }%, transparent)`,
         border: "1px solid color-mix(in srgb, var(--fg) 9%, transparent)",
         padding: "18px 22px 14px",
         pointerEvents: "none",
         width: "min(292px, calc(100vw - 32px))",
-        boxShadow: "0 8px 52px rgba(0,0,0,0.35)",
+        boxShadow: isDark
+          ? "0 8px 52px rgba(0,0,0,0.35)"
+          : "0 6px 32px rgba(0,0,0,0.14)",
         opacity: 0,
-        willChange: "opacity",
+        willChange: "opacity, transform",
       }}
     >
-      <div
-        style={{
-          ...DISPLAY,
-          fontSize: 54,
-          lineHeight: 1,
-          color: fg,
-          marginBottom: 7,
-        }}
-      >
-        {String(seriesNumber(series)).padStart(2, "0")}
+      {/* (A) RP mask reveal: each line rises out of an overflow:hidden
+          mask (translateY 110% + rotate 4° → 0, staggered) — the same
+          grammar as the INFO title / list cards / footer numbers */}
+      <div style={{ overflow: "hidden", marginBottom: 7 }}>
+        <div
+          data-hp="line"
+          style={{
+            ...DISPLAY,
+            fontSize: 54,
+            lineHeight: 1,
+            color: fg,
+          }}
+        >
+          {String(seriesNumber(series)).padStart(2, "0")}
+        </div>
       </div>
-      <div
-        style={{
-          ...DISPLAY,
-          fontSize: 14,
-          color: fg,
-          marginBottom: 11,
-          letterSpacing: "0.03em",
-        }}
-      >
-        {series.name}
+      <div style={{ overflow: "hidden", marginBottom: 11 }}>
+        <div
+          data-hp="line"
+          style={{
+            ...DISPLAY,
+            fontSize: 14,
+            color: fg,
+            letterSpacing: "0.03em",
+          }}
+        >
+          {series.name}
+        </div>
       </div>
       <div
         style={{
@@ -798,7 +813,7 @@ function HoverPanel({
           ["PHOTOS", String(series.photos.length)],
           ["FRAME", `${index + 1} / ${series.photos.length}`],
         ] as [string, string][]).map(([k, v]) => (
-          <div key={k} style={{ display: "flex", gap: 10 }}>
+          <div key={k} data-hp="row" style={{ display: "flex", gap: 10 }}>
             <span
               style={{
                 ...MONO,
@@ -815,6 +830,7 @@ function HoverPanel({
         ))}
       </div>
       <div
+        data-hp="fin"
         style={{
           ...MONO,
           fontSize: 10,
@@ -1117,15 +1133,63 @@ export default function App() {
     return () => window.clearTimeout(t)
   }, [hoveredWP])
 
+  // cascade state: first show vs in-card replay (B)
+  const panelShownRef = useRef(false)
+
   useLayoutEffect(() => {
     const el = panelRef.current
     if (!el) return
     gsap.killTweensOf(el)
-    gsap.to(el, {
-      opacity: hoveredWP ? 1 : 0,
-      duration: hoveredWP ? 0.22 : 0.18,
-      ease: "power2.inOut",
-    })
+    if (!hoveredWP) {
+      panelShownRef.current = false
+      gsap.to(el, { opacity: 0, y: 10, duration: 0.18, ease: "power2.inOut" })
+      return
+    }
+    // stale commit (hover already moved on, panelWP lags one commit
+    // behind): the card stays put — the latch's commit re-runs this
+    // with the new content and replays the cascade there
+    if (panelWP !== hoveredWP) return
+    const lines = el.querySelectorAll<HTMLElement>('[data-hp="line"]')
+    const rows = el.querySelectorAll<HTMLElement>('[data-hp="row"]')
+    const fins = el.querySelectorAll<HTMLElement>('[data-hp="fin"]')
+    gsap.killTweensOf([...lines, ...rows, ...fins])
+    const reduced = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches
+    if (reduced) {
+      gsap.set([lines, rows, fins], { clearProps: "all" })
+      gsap.set(el, { opacity: 1, y: 0 })
+      panelShownRef.current = true
+      return
+    }
+    const firstShow = !panelShownRef.current
+    panelShownRef.current = true
+    // children hidden states (React already rendered the NEW text)
+    gsap.set(lines, { yPercent: 110, rotate: 4 })
+    gsap.set(rows, { y: 8, opacity: 0 })
+    gsap.set(fins, { opacity: 0 })
+    const tl = gsap.timeline()
+    if (firstShow) {
+      gsap.set(el, { y: 14 })
+      tl.to(el, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0)
+    } // replay (B): the card is already on screen — children only
+    tl.to(
+      lines,
+      {
+        yPercent: 0,
+        rotate: 0,
+        duration: 0.5,
+        ease: "power2.out",
+        stagger: 0.05,
+      },
+      0.05,
+    )
+    tl.to(
+      rows,
+      { y: 0, opacity: 1, duration: 0.3, ease: "power2.out", stagger: 0.03 },
+      0.18,
+    )
+    tl.to(fins, { opacity: 1, duration: 0.25, ease: "power2.out" }, 0.42)
   }, [hoveredWP, panelWP])
 
   // ── Intro: RP-style loading curtain ──────────────────────────────
@@ -1660,7 +1724,7 @@ export default function App() {
             onOpenInfo={openInfo}
           />
           {panelWP && (
-            <HoverPanel wp={panelWP} panelRef={panelRef} bg={bg} fg={fg} />
+            <HoverPanel wp={panelWP} panelRef={panelRef} fg={fg} isDark={isDark} />
           )}
 
           <div
