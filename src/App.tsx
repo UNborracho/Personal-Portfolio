@@ -7,6 +7,7 @@ import {
   useCallback,
   lazy,
   Suspense,
+  Component,
 } from "react"
 import Lenis from "lenis"
 import gsap from "gsap"
@@ -22,6 +23,7 @@ import type { GalleryHandle } from "./WebGLGallery"
 const WebGLGallery = lazy(() => import("./WebGLGallery"))
 import Cursor from "./Cursor"
 import Transition from "./Transition"
+import ErrorBoundary from "./ErrorBoundary"
 import { useRoute, nav, navReplace, type Mode } from "./router"
 import {
   WALL,
@@ -31,14 +33,7 @@ import {
   type WallPhoto,
   type CatFilter,
 } from "./shared"
-import {
-  REDUCED_MOTION,
-  fadeExit,
-  MONO,
-  DISPLAY,
-  NOISE,
-  type View,
-} from "./ui"
+import { REDUCED_MOTION, fadeExit, MONO, DISPLAY, NOISE, type View } from "./ui"
 import { Chars } from "./components/Chars"
 import {
   Odometer,
@@ -724,6 +719,65 @@ export default function App() {
     nav(mainHref(c, mode))
   }
 
+  // DOM masonry — rendered for no-WebGL devices AND as the gallery's
+  // error-boundary fallback (one definition, two consumers)
+  const masonry = (
+    <Transition
+      show={(mode === "overview" || mode === "list") && !infoOpen}
+      enter={masonryEnter}
+      exit={masonryExit}
+    >
+      <section
+        style={{
+          paddingTop: 80,
+          paddingBottom: 260,
+          paddingLeft: "clamp(16px, 4vw, 40px)",
+          paddingRight: "clamp(16px, 4vw, 40px)",
+        }}
+        onMouseLeave={() => setHoveredWP(null)}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              "repeat(auto-fill, minmax(min(240px, 44vw), 1fr))",
+            gap: 28,
+            alignItems: "start",
+          }}
+        >
+          {pool.map((wp) => (
+            <div
+              data-cursor
+              className="masonry-card"
+              key={`${wp.series.slug}-${wp.index}`}
+              style={{
+                aspectRatio: `${wp.photo.w} / ${wp.photo.h}`,
+                overflow: "hidden",
+                cursor: "pointer",
+                background: "var(--bg-soft)",
+                position: "relative",
+              }}
+              onMouseEnter={() => setHoveredWP(wp)}
+              onClick={() => openProject(wp)}
+            >
+              <img
+                src={wp.photo.thumb}
+                alt={`${wp.series.name} ${wp.index + 1}`}
+                loading="lazy"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  display: "block",
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      </section>
+    </Transition>
+  )
+
   return (
     <div
       style={{
@@ -917,7 +971,12 @@ export default function App() {
             onOpenInfo={openInfo}
           />
           {panelWP && (
-            <HoverPanel wp={panelWP} panelRef={panelRef} fg={fg} isDark={isDark} />
+            <HoverPanel
+              wp={panelWP}
+              panelRef={panelRef}
+              fg={fg}
+              isDark={isDark}
+            />
           )}
 
           <div
@@ -948,84 +1007,34 @@ export default function App() {
           {/* Gallery stays mounted for the whole main view — overview AND
               list now (the filmstrip is in-canvas). `active` is false only
               for project/info; list↔overview mode flips trigger the RP view
-              transition inside the gallery. */}
+              transition inside the gallery. Boundary: a gallery crash
+              degrades to the DOM masonry instead of a white page. */}
           {webglOk ? (
-            <Suspense fallback={null}>
-              <WebGLGallery
-                ref={galleryRef}
-                active={view === "main" && !infoOpen}
-                infoOpen={infoOpen}
-                listMode={mode === "list"}
-                pool={pool}
-                isDark={isDark}
-                onHover={setHoveredWP}
-                onSeq={(n) => footerOdomRef.current?.to(n)}
-                onResetScroll={() => {
-                  // the wall already reset its own virtual position to top
-                  // (instant, at re-seed) — sync the window scroll to match
-                  // (page is locked; zero visual impact) + odometer back to 1
-                  lenisRef.current?.scrollTo(0, { immediate: true })
-                  footerOdomRef.current?.to(1)
-                }}
-                onPick={openProject}
-              />
-            </Suspense>
+            <ErrorBoundary fallback={masonry}>
+              <Suspense fallback={null}>
+                <WebGLGallery
+                  ref={galleryRef}
+                  active={view === "main" && !infoOpen}
+                  infoOpen={infoOpen}
+                  listMode={mode === "list"}
+                  pool={pool}
+                  isDark={isDark}
+                  onHover={setHoveredWP}
+                  onSeq={(n) => footerOdomRef.current?.to(n)}
+                  onResetScroll={() => {
+                    // the wall already reset its own virtual position to top
+                    // (instant, at re-seed) — sync the window scroll to match
+                    // (page is locked; zero visual impact) + odometer back to 1
+                    lenisRef.current?.scrollTo(0, { immediate: true })
+                    footerOdomRef.current?.to(1)
+                  }}
+                  onPick={openProject}
+                />
+              </Suspense>
+            </ErrorBoundary>
           ) : (
             /* DOM masonry fallback (no WebGL / reduced motion) */
-            <Transition
-              show={(mode === "overview" || mode === "list") && !infoOpen}
-              enter={masonryEnter}
-              exit={masonryExit}
-            >
-              <section
-                style={{
-                  paddingTop: 80,
-                  paddingBottom: 260,
-                  paddingLeft: "clamp(16px, 4vw, 40px)",
-                  paddingRight: "clamp(16px, 4vw, 40px)",
-                }}
-                onMouseLeave={() => setHoveredWP(null)}
-              >
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns:
-                      "repeat(auto-fill, minmax(min(240px, 44vw), 1fr))",
-                    gap: 28,
-                    alignItems: "start",
-                  }}
-                >
-                  {pool.map((wp) => (
-                    <div
-                      data-cursor
-                      className="masonry-card"
-                      key={`${wp.series.slug}-${wp.index}`}
-                      style={{
-                        aspectRatio: `${wp.photo.w} / ${wp.photo.h}`,
-                        overflow: "hidden",
-                        cursor: "pointer",
-                        background: "var(--bg-soft)",
-                        position: "relative",
-                      }}
-                      onMouseEnter={() => setHoveredWP(wp)}
-                      onClick={() => openProject(wp)}
-                    >
-                      <img
-                        src={wp.photo.thumb}
-                        alt={`${wp.series.name} ${wp.index + 1}`}
-                        loading="lazy"
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          objectFit: "cover",
-                          display: "block",
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </Transition>
+            masonry
           )}
 
           {/* ── Footer ───────────────────────────────────────────────── */}
