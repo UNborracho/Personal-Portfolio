@@ -10,7 +10,13 @@
 
 An infinite, scroll-driven photography portfolio. The gallery is a Three.js plane conveyor bent along a gentle cylinder — scrolling forever, every wrapped plane carrying the next photo from a shuffled lap sequence. One lap = every photo, no repeats; the next lap reshuffles. Lenis drives the smooth scroll, GSAP the choreography, and every animation is a 1:1 recreation of the reference site's decompiled timing. Live at **[portfolio.vagab0nd.site](https://portfolio.vagab0nd.site)**.
 
-![wall](docs/02-wall.png)
+| Overview wall | List · film strip |
+| --- | --- |
+| ![overview wall](docs/02-wall.png) | ![list view](docs/03-list.png) |
+| **Project · series page** | **Hover · series card** |
+| ![project view](docs/04-project.png) | ![hover card](docs/06-hover.png) |
+| **Preloader · real progress** | **INFO overlay** |
+| ![preloader](docs/01-preloader.png) | ![info overlay](docs/05-info.png) |
 
 ## Features
 
