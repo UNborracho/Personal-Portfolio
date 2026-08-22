@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "format": "oxfmt",
+    "test": "vitest run",
     "photos": "node scripts/photos.mjs"
   },
   "dependencies": {
@@ -28,7 +29,8 @@
     "sharp": "^0.35.3",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
-    "vite": "^8.0.0"
+    "vite": "^8.0.0",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=22.12"

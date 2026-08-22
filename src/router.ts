@@ -61,7 +61,7 @@ export function parseHash(hash: string = window.location.hash): Route {
 
 export function routeHash(route: Route): string {
   if (route.view === "project" && route.series) {
-    return `#/p/${route.series}${route.photo > 1 ? `/${route.photo}` : ""}`
+    return `#/p/${route.series}${route.photo > 1 ? `/${route.photo}` : ""}${route.info ? "/info" : ""}`
   }
   const parts: string[] = []
   if (route.cat !== "all") parts.push(route.cat)
